@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Обёртка CLI: запускает команды от пользователя gift с его окружением.
+# Обёртка CLI: запускает команды от служебного пользователя с его окружением.
 set -euo pipefail
-APP_DIR=/opt/gift
+APP_DIR=__APP_DIR__
+APP_USER=__APP_USER__
 if [[ $EUID -eq 0 ]]; then
-    exec sudo -u gift env -C "$APP_DIR" "$APP_DIR/.venv/bin/python" -m app.cli "$@"
+    exec sudo -u "$APP_USER" env -C "$APP_DIR" "$APP_DIR/.venv/bin/python" -m app.cli "$@"
 fi
 exec env -C "$APP_DIR" "$APP_DIR/.venv/bin/python" -m app.cli "$@"

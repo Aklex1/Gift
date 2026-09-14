@@ -1,15 +1,15 @@
 [Unit]
-Description=Gift — Telegram-бот управления торговлей подарками
+Description=__SERVICE_PREFIX__ — Telegram-бот управления торговлей подарками
 After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=gift
-Group=gift
-WorkingDirectory=/opt/gift
-EnvironmentFile=/opt/gift/.env
-ExecStart=/opt/gift/.venv/bin/python -m app.bot.main
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__APP_DIR__/.venv/bin/python -m app.bot.main
 Restart=always
 RestartSec=10
 
@@ -18,14 +18,14 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/gift
+ReadWritePaths=__DATA_DIR__
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=gift-bot
+SyslogIdentifier=__SERVICE_PREFIX__-bot
 
 [Install]
 WantedBy=multi-user.target

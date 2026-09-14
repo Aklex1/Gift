@@ -11,11 +11,15 @@
 
 ## Быстрый старт
 
+Ставится в отдельный каталог и не мешает другим сайтам на сервере:
+свой пользователь, своя база, свой порт nginx. Порт 80 не занимается,
+default-сайт не удаляется.
+
 ```bash
-# на сервере, от root
-BRANCH=claude/telegram-gift-resale-bot-p74jn7
+# от root на сервере
+export BRANCH=claude/telegram-gift-resale-bot-p74jn7
 git clone -b "$BRANCH" https://github.com/Aklex1/Gift.git /opt/gift
-BRANCH="$BRANCH" bash /opt/gift/deploy/install.sh
+bash /opt/gift/deploy/install.sh
 
 # вписать ключи
 nano /opt/gift/.env          # BOT_TOKEN, OWNER_IDS, TG_API_ID, TG_API_HASH
@@ -27,6 +31,29 @@ gift-cli login
 gift-cli doctor
 systemctl enable --now gift-bot gift-web gift-worker
 ```
+
+Панель откроется на `http://<ip>:8081/`.
+
+Параметры установки меняются переменными окружения:
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `APP_DIR` | `/opt/gift` | каталог с кодом |
+| `DATA_DIR` | `/var/lib/gift` | сессия, логи, секреты |
+| `APP_NAME` | `gift` | префикс сервисов, имя пользователя и БД |
+| `NGINX_PORT` | `8081` | внешний порт панели |
+| `WEB_PORT` | `8090` | внутренний порт приложения |
+| `SETUP_NGINX` | `1` | `0` — не трогать nginx вообще |
+
+Пример второй независимой установки:
+
+```bash
+APP_DIR=/opt/gift2 DATA_DIR=/var/lib/gift2 APP_NAME=gift2 \
+NGINX_PORT=8082 WEB_PORT=8092 bash /opt/gift/deploy/install.sh
+```
+
+Удаление — `bash /opt/gift/deploy/uninstall.sh` (спросит подтверждение,
+чужие сайты и базы не трогает).
 
 **Какие ключи нужны и где их взять — [docs/SETUP.md](docs/SETUP.md).**
 **Чем пополнять кошелёк — [docs/WALLET.md](docs/WALLET.md).**
@@ -124,7 +151,7 @@ gift-cli inventory   # сверка портфеля
 
 ### Веб-панель
 
-`http://<ip-сервера>/` — дашборд, кандидаты, портфель, матрица
+`http://<ip-сервера>:8081/` — дашборд, кандидаты, портфель, матрица
 площадок, журнал аудита. Логин `admin`, пароль сгенерирован
 установщиком (`cat /var/lib/gift/.webpass`).
 
