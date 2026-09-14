@@ -62,7 +62,10 @@ async def refresh(markets: tuple[Market, ...] = WITH_WALLET) -> dict:
             continue
 
         record: dict[str, object] = {
-            "at": dt.datetime.utcnow().isoformat(timespec="seconds")
+            "at": dt.datetime.utcnow().isoformat(timespec="seconds"),
+            # Адрес в записи: по ошибке вида «хост не резолвится» иначе
+            # не понять, что в .env остался прежний домен площадки.
+            "url": getattr(adapter, "base_url", ""),
         }
         try:
             rows = await asyncio.wait_for(adapter.balance(), timeout=TIMEOUT)
@@ -74,8 +77,14 @@ async def refresh(markets: tuple[Market, ...] = WITH_WALLET) -> dict:
             record["error"] = f"площадка не ответила за {TIMEOUT:.0f} c"
             report[market.value] = record["error"]
         except Exception as exc:  # noqa: BLE001 - одна площадка не ломает опрос
-            record["error"] = f"{type(exc).__name__}: {exc}"
-            report[market.value] = record["error"]
+            text = f"{type(exc).__name__}: {exc}"
+            if "No address associated" in text or "getaddrinfo" in text:
+                text = (
+                    f"домен {record['url']} не резолвится — вероятно, в .env "
+                    f"остался прежний адрес. Выполните: gift-cli env-sync"
+                )
+            record["error"] = text
+            report[market.value] = text
             log.debug("Баланс %s недоступен: %s", market.value, exc)
 
         store.set(_key(market), json.dumps(record, ensure_ascii=False))
@@ -114,6 +123,7 @@ def snapshot() -> list[dict]:
                 "amount": Decimal(amount) if amount is not None else None,
                 "currency": record.get("currency", "TON"),
                 "at": record.get("at"),
+                "url": record.get("url"),
                 "error": record.get("error"),
                 "enabled": enabled,
             }

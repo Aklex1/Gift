@@ -77,8 +77,25 @@ if [[ -n "$NGINX_PORT" ]]; then
     esac
 fi
 
+hdr "Адреса площадок из конфигурации"
+sudo -u "$APP_NAME" env -C "$APP_DIR" "$APP_DIR/.venv/bin/python" - <<'PYEOF' 2>/dev/null || inf "не удалось прочитать конфигурацию"
+from app.config import settings
+
+DEAD = {"portals-market.com", "api.mrkt.land"}
+for name, url in [
+    ("Portals", settings.portals_base_url),
+    ("MRKT   ", settings.mrkt_base_url),
+    ("Tonnel ", settings.tonnel_base_url),
+]:
+    mark = "x" if any(d in url for d in DEAD) else "v"
+    print(f"  [{mark}] {name}: {url}")
+if any(d in settings.portals_base_url or d in settings.mrkt_base_url for d in DEAD):
+    print()
+    print("  Адрес устарел и не резолвится. Исправить: gift-cli env-sync")
+PYEOF
+
 hdr "Сеть до площадок"
-for host in api.telegram.org portals-market.com api.tgmrkt.io tonapi.io; do
+for host in api.telegram.org portals.tg api.tgmrkt.io tonapi.io; do
     if getent hosts "$host" >/dev/null 2>&1; then
         code="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "https://$host" 2>/dev/null)"
         if [[ -n "$code" && "$code" != "000" ]]; then
@@ -90,13 +107,13 @@ for host in api.telegram.org portals-market.com api.tgmrkt.io tonapi.io; do
         bad "$host — DNS не резолвит"
     fi
 done
-if ! getent hosts portals-market.com >/dev/null 2>&1; then
+if ! getent hosts portals.tg >/dev/null 2>&1; then
     inf ""
     inf "DNS не работает. Проверьте:"
     inf "    cat /etc/resolv.conf"
     inf "    resolvectl status 2>/dev/null | head -20"
     inf "Быстрая проверка с публичным DNS:"
-    inf "    getent hosts portals-market.com || nslookup portals-market.com 8.8.8.8"
+    inf "    getent hosts portals.tg || nslookup portals.tg 8.8.8.8"
 fi
 
 hdr "Конфигурация"

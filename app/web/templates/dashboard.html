@@ -68,6 +68,7 @@
         <b>{{ amount(m.amount) }}</b> {{ m.currency }}
       {% elif m.error %}
         <span class="neg">{{ m.error }}</span>
+        {% if m.url %}<div class="muted" style="font-size:12px">{{ m.url }}</div>{% endif %}
       {% else %}
         <span class="muted">не опрашивался</span>
       {% endif %}
