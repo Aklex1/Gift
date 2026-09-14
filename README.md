@@ -52,6 +52,9 @@ APP_DIR=/opt/gift2 DATA_DIR=/var/lib/gift2 APP_NAME=gift2 \
 NGINX_PORT=8082 WEB_PORT=8092 bash /opt/gift/deploy/install.sh
 ```
 
+Обновление — `bash /opt/gift/deploy/update.sh` (переустанавливает и
+юниты с конфигом nginx, порты сохраняет).
+Диагностика при проблемах — `bash /opt/gift/deploy/diagnose.sh`.
 Удаление — `bash /opt/gift/deploy/uninstall.sh` (спросит подтверждение,
 чужие сайты и базы не трогает).
 
