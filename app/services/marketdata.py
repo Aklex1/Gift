@@ -315,6 +315,36 @@ def fit(value: str | None, limit: int = 255) -> str | None:
     return value[:limit]
 
 
+def snapshot_from_attribute_floor(
+    *,
+    collection: str,
+    model: str | None,
+    model_floor: Decimal,
+    collection_floor: Decimal | None,
+    listed_count: int = 0,
+) -> MarketSnapshot:
+    """Срез рынка по floor конкретной модели.
+
+    Площадка считает минимальную цену отдельно для каждой модели, и
+    это лучшая доступная оценка справедливой стоимости: подарок с
+    редкой моделью стоит кратно дороже floor коллекции. Собственную
+    историю продаж пришлось бы копить неделями.
+    """
+    return MarketSnapshot(
+        collection=collection,
+        model=model,
+        median_price=model_floor,
+        floor_price=collection_floor or model_floor,
+        sample_size=max(1, listed_count),
+        # Данные приходят от самой площадки и обновляются постоянно.
+        confidence=Confidence.HIGH if listed_count >= 3 else Confidence.MEDIUM,
+        velocity_per_day=0.0,
+        newest=utcnow(),
+        active_listings=listed_count,
+        source="portals_attribute_floor",
+    )
+
+
 def record_facts(session: Session, sales: list, market: Market) -> int:
     """Сохранить историю продаж, отфильтровав дубликаты и wash trades."""
     saved = 0

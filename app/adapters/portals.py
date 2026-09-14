@@ -94,6 +94,8 @@ class PortalsAdapter(HttpMarketAdapter):
             enabled=bool(runtime.write_enabled(Market.PORTALS) and has_auth),
             defaults=DEFAULT_WRITE_CONTRACT,
         )
+        #: Кэш floor по атрибутам: коллекция -> (когда, значения).
+        self._floor_cache: dict[str, tuple[dt.datetime, dict]] = {}
 
     # ------------------------------------------------------------------
     def _headers(self) -> dict[str, str]:
@@ -214,7 +216,10 @@ class PortalsAdapter(HttpMarketAdapter):
                     price=price,
                     currency=Currency.TON,
                     seller=first(item, "owner_id", "owner", "seller"),
-                    raw={"status": item.get("status")},
+                    raw={
+                        "status": item.get("status"),
+                        "floor_price": item.get("floor_price"),
+                    },
                 )
             )
         return out
@@ -312,6 +317,88 @@ class PortalsAdapter(HttpMarketAdapter):
                     },
                 )
             )
+        return out
+
+    async def attribute_floors(self, collection: str) -> dict[str, dict[str, Decimal]]:
+        """Минимальные цены по атрибутам коллекции.
+
+        Portals считает floor отдельно для каждой модели, символа и
+        фона. Это качественно меняет оценку: подарок с редкой моделью
+        стоит кратно дороже floor коллекции, и именно там возникают
+        недооценённые лоты. Без этих данных пришлось бы неделями
+        копить собственную историю продаж.
+
+        Эндпоинт отдаёт значения только с токеном; без него вернётся
+        пустой словарь, и оценка откатится на историю.
+
+        Returns:
+            {"models": {название: floor}, "symbols": {...}, "backdrops": {...}}
+        """
+        cached = self._floor_cache.get(collection)
+        if cached and (dt.datetime.utcnow() - cached[0]).total_seconds() < 600:
+            return cached[1]
+
+        try:
+            data = await self.request(
+                "GET", "/collections/filters", params={"short_names": collection}
+            )
+        except Exception as exc:  # noqa: BLE001 - оценка обойдётся без этого
+            log.debug("Portals: floor по атрибутам недоступен: %s", exc)
+            return {}
+
+        out = self._parse_attribute_floors(data, collection)
+        self._floor_cache[collection] = (dt.datetime.utcnow(), out)
+        if not any(out.values()):
+            log.info(
+                "Portals: floor по атрибутам для %r пуст — вероятно, нужен токен",
+                collection,
+            )
+        return out
+
+    @staticmethod
+    def _parse_attribute_floors(
+        data: object, collection: str
+    ) -> dict[str, dict[str, Decimal]]:
+        """Разобрать ответ, не полагаясь на одну форму.
+
+        Площадка возвращала разные структуры, поэтому поддерживаются
+        обе: словарь floor_prices и список атрибутов внутри collections.
+        """
+        out: dict[str, dict[str, Decimal]] = {
+            "models": {},
+            "symbols": {},
+            "backdrops": {},
+        }
+        if not isinstance(data, dict):
+            return out
+
+        # Форма 1: floor_prices[коллекция][раздел][название] = цена
+        block = (data.get("floor_prices") or {}).get(collection)
+        if isinstance(block, dict):
+            for section in out:
+                values = block.get(section)
+                if isinstance(values, dict):
+                    for name, price in values.items():
+                        value = to_decimal(price)
+                        if value and value > 0:
+                            out[section][str(name)] = value
+
+        # Форма 2: collections[коллекция][раздел] = [{name, floor_price}]
+        block = (data.get("collections") or {}).get(collection)
+        if isinstance(block, dict):
+            for section in out:
+                values = block.get(section)
+                if not isinstance(values, list):
+                    continue
+                for entry in values:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = first(entry, "name", "value", "title")
+                    price = to_decimal(
+                        first(entry, "floor_price", "floor", "price", "min_price")
+                    )
+                    if name and price and price > 0:
+                        out[section][str(name)] = price
         return out
 
     async def fetch_listing(self, external_id: str) -> ListingDTO | None:

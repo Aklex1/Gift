@@ -38,6 +38,16 @@ from app.services.marketdata import MarketSnapshot
 
 log = logging.getLogger(__name__)
 
+def to_decimal_or_none(value: object) -> Decimal | None:
+    """Мягкое приведение к Decimal для необязательных полей."""
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 #: Сколько живёт кандидат, прежде чем считать цену устаревшей.
 CANDIDATE_TTL = dt.timedelta(minutes=10)
 
@@ -236,6 +246,27 @@ async def snapshot_for_listing(
                     )
             except Exception as exc:  # noqa: BLE001 - откатываемся на свою выборку
                 log.debug("value_info для %s недоступен: %s", dto.external_id, exc)
+
+    if dto.market is Market.PORTALS and dto.gift.model:
+        # Floor по модели — самая точная оценка, доступная сразу.
+        adapter = get_adapter(Market.PORTALS)
+        floors = getattr(adapter, "attribute_floors", None)
+        if floors is not None:
+            try:
+                data = await floors(dto.gift.collection)
+                model_floor = (data.get("models") or {}).get(dto.gift.model)
+                if model_floor:
+                    return marketdata.snapshot_from_attribute_floor(
+                        collection=dto.gift.collection,
+                        model=dto.gift.model,
+                        model_floor=model_floor,
+                        collection_floor=to_decimal_or_none(
+                            (dto.raw or {}).get("floor_price")
+                        ),
+                        listed_count=len(data.get("models") or {}),
+                    )
+            except Exception as exc:  # noqa: BLE001 - откат на историю
+                log.debug("Portals: floor модели недоступен: %s", exc)
 
     return marketdata.snapshot_for(
         session, collection=dto.gift.collection, model=dto.gift.model

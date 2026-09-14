@@ -281,3 +281,48 @@ def test_falling_market_still_respects_floor(session):
         currency=Currency.TON,
     )
     assert price > Decimal("10"), "продажа в убыток недопустима"
+
+
+def test_rare_model_valued_above_collection_floor(session):
+    """Редкая модель оценивается по своему floor, а не по floor коллекции.
+
+    Именно здесь возникают недооценённые лоты: к floor коллекции рынок
+    выровнен, а внутри коллекции редкая модель стоит кратно дороже.
+    """
+    from app.services.marketdata import snapshot_from_attribute_floor
+
+    seed_fee_schedules(session)
+    snapshot = snapshot_from_attribute_floor(
+        collection="Lol Pop",
+        model="Mirage",
+        model_floor=Decimal("12.5"),
+        collection_floor=Decimal("3.9"),
+        listed_count=8,
+    )
+    # Лот с редкой моделью выставлен по цене обычного.
+    result = evaluate(
+        session, buy_market=Market.PORTALS, buy_price=Decimal("4.2"),
+        sell_market=Market.PORTALS, snapshot=snapshot, is_official_api=False,
+    )
+    assert result.net_profit > 0
+    assert result.net_roi > Decimal("1.0"), "разница вдвое и больше"
+    assert not result.blockers
+
+
+def test_common_model_at_floor_is_not_a_deal(session):
+    """Обычная модель по цене floor прибыли не даёт."""
+    from app.services.marketdata import snapshot_from_attribute_floor
+
+    seed_fee_schedules(session)
+    snapshot = snapshot_from_attribute_floor(
+        collection="Lol Pop",
+        model="Common",
+        model_floor=Decimal("4.0"),
+        collection_floor=Decimal("3.9"),
+        listed_count=50,
+    )
+    result = evaluate(
+        session, buy_market=Market.PORTALS, buy_price=Decimal("3.95"),
+        sell_market=Market.PORTALS, snapshot=snapshot, is_official_api=False,
+    )
+    assert result.net_roi < Decimal("0.05")
