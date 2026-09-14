@@ -41,7 +41,9 @@ from app.enums import (
     TradeMode,
 )
 from app.models import AuditLog, Candidate, Gift, Intent, Position, Strategy, Transaction, utcnow
+from app.services import accounts as accounts_service
 from app.services import budget as budget_service
+from app.services import limits
 from app.services import runtime
 from app.services import saga
 from app.services import strategy as strategy_service
@@ -185,6 +187,36 @@ async def execute_buy(
                 ),
             }
 
+        # Суточные лимиты: предохранитель от слишком быстрого расхода.
+        reason = limits.check(
+            session,
+            market=market,
+            amount=native_price,
+            amount_stars=price_stars,
+        )
+        if reason:
+            return {"ok": False, "detail": reason}
+
+        # Аккаунт, с которого пойдёт покупка.
+        account = None
+        if market is Market.TELEGRAM:
+            account = accounts_service.pick_for_trade(
+                session,
+                strategy_account_id=strategy.account_id,
+                amount=native_price,
+            )
+            # Если аккаунты вообще не заводили, работает прежняя сессия
+            # из .env. Блокируем только когда аккаунты есть, но ни один
+            # не пригоден — иначе сделка ушла бы не с того аккаунта.
+            if account is None and accounts_service.all_accounts(session):
+                return {
+                    "ok": False,
+                    "detail": (
+                        "нет доступного аккаунта для покупки: проверьте раздел "
+                        "«Аккаунты» — сессия, FloodWait, баланс"
+                    ),
+                }
+
         # --- 2. Намерение (идемпотентность) ---
         intent = saga.plan(
             session,
@@ -198,6 +230,8 @@ async def execute_buy(
             gift_id=candidate.gift_id,
             decision=candidate.rationale or {},
         )
+        if account is not None:
+            intent.account_id = account.id
         if intent.status is not IntentStatus.PLANNED:
             return {
                 "ok": False,
@@ -246,6 +280,7 @@ async def execute_buy(
         intent_id = intent.id
         reservation_id = reservation.id
         gift_id = candidate.gift_id
+        account_id = account.id if account is not None else None
 
         session.add(
             AuditLog(
@@ -263,7 +298,7 @@ async def execute_buy(
         )
 
     # --- 4. Внешний вызов (вне транзакции БД) ---
-    adapter = get_adapter(market)
+    adapter = _adapter_for(market, account_id)
     idempotency_key = f"buy-{intent_id}"
     result: ExecutionResult | None = None
     unknown_detail: str | None = None
@@ -344,6 +379,7 @@ async def execute_buy(
             price=executed,
             currency=executed_currency,
             intent_id=intent_id,
+            account_id=account_id,
         )
         session.add(
             Transaction(
@@ -365,6 +401,24 @@ async def execute_buy(
             "intent_id": intent_id,
             "position_id": position.id,
         }
+
+
+def _adapter_for(market: Market, account_id: int | None):
+    """Адаптер площадки для конкретного аккаунта.
+
+    Для внешних площадок аккаунт Telegram роли не играет.
+    """
+    if market is not Market.TELEGRAM or account_id is None:
+        return get_adapter(market)
+
+    from app.adapters.registry import telegram_adapter_for
+    from app.models import Account
+
+    with session_scope() as session:
+        account = session.get(Account, account_id)
+        if account is None:
+            return get_adapter(market)
+        return telegram_adapter_for(account)
 
 
 def _budget_currency(session: Session, budget_id: int | None) -> Currency:
@@ -405,6 +459,7 @@ def _create_position(
     price: Decimal,
     intent_id: int,
     currency: Currency = Currency.STARS,
+    account_id: int | None = None,
 ) -> Position:
     """Создать позицию в портфеле после успешной покупки."""
     position = Position(
@@ -417,6 +472,7 @@ def _create_position(
         buy_currency=currency,
         bought_at=utcnow(),
         buy_intent_id=intent_id,
+        account_id=account_id,
     )
     session.add(position)
     session.flush()

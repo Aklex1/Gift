@@ -3,7 +3,9 @@
 Команды:
     gen-key     — сгенерировать ключ шифрования секретов
     init        — создать схему БД и стартовые данные
-    login       — интерактивная авторизация торгового аккаунта Telegram
+    login       — вход в торговый аккаунт Telegram
+                  (`login --account второй` для конкретного аккаунта)
+    accounts    — список аккаунтов и их балансы
     whoami      — показать, под каким аккаунтом работает сессия
     balance     — балансы Stars/TON
     probe       — живая проверка доступности площадок
@@ -46,40 +48,82 @@ def cmd_init() -> int:
     with session_scope() as session:
         seed_fee_schedules(session)
         seed_default_strategy(session)
+        # Прежняя сессия из .env становится первым аккаунтом, чтобы
+        # обновление не потеряло уже выполненный вход.
+        from app.services.accounts import adopt_legacy
+
+        adopted = adopt_legacy(session)
     sync_capabilities()
+    if adopted is not None:
+        print(f"✓ Существующая сессия перенесена в аккаунт {adopted.name!r}")
     print("✓ База данных готова, стартовая стратегия создана (выключена, режим SAFE)")
     return 0
 
 
-async def _login() -> int:
-    """Интерактивная авторизация Telethon."""
+async def _login(account_name: str | None = None) -> int:
+    """Интерактивный вход в торговый аккаунт.
+
+    Без имени берётся первый аккаунт из таблицы, а если её ещё не
+    заполняли — данные из .env (для совместимости с прежней установкой).
+    """
     from telethon import TelegramClient
     from telethon.errors import SessionPasswordNeededError
 
-    from app.adapters.telegram_gateway import gateway
+    from app.db import init_db, session_scope
+    from app.models import Account
+    from app.services import accounts as accounts_service
 
-    api_id, api_hash = gateway.credentials()
+    init_db()
+
+    account_id: int | None = None
+    with session_scope() as session:
+        # Прежняя сессия из .env переносится в таблицу, чтобы не
+        # потерять уже работающий аккаунт.
+        accounts_service.adopt_legacy(session)
+
+        rows = accounts_service.all_accounts(session)
+        if account_name:
+            match = next(
+                (a for a in rows if a.name.lower() == account_name.lower()), None
+            )
+            if match is None:
+                print(f"✗ Аккаунт {account_name!r} не найден.", file=sys.stderr)
+                if rows:
+                    print("  Доступные: " + ", ".join(a.name for a in rows),
+                          file=sys.stderr)
+                else:
+                    print("  Добавьте его в панели, раздел «Аккаунты».",
+                          file=sys.stderr)
+                return 1
+            chosen = match
+        elif rows:
+            chosen = rows[0]
+        else:
+            print(
+                "✗ Аккаунтов нет и api_id/api_hash в .env не заданы.\n"
+                "  Добавьте аккаунт в панели: раздел «Аккаунты».",
+                file=sys.stderr,
+            )
+            return 1
+
+        account_id = chosen.id
+        label = chosen.name
+        api_id = chosen.api_id
+        api_hash = accounts_service.api_hash_of(chosen)
+        phone_hint = chosen.phone
+        path = accounts_service.session_path(chosen)
+
     if not api_id or not api_hash:
-        print(
-            "✗ api_id / api_hash не заданы.\n"
-            "  Получите их на https://my.telegram.org -> API development tools\n"
-            "  и укажите в веб-панели (Настройки) либо в файле .env",
-            file=sys.stderr,
-        )
+        print(f"✗ Аккаунт {label}: не заданы api_id / api_hash", file=sys.stderr)
         return 1
 
     settings.ensure_dirs()
-    client = TelegramClient(
-        str(settings.session_path.with_suffix("")), api_id, api_hash
-    )
+    print(f"Вход в аккаунт: {label}")
+    client = TelegramClient(str(path.with_suffix("")), api_id, api_hash)
     await client.connect()
 
     if not await client.is_user_authorized():
-        from app.services import secrets
-
-        phone = secrets.resolve("TG_PHONE", settings.tg_phone) or input(
-            "Номер телефона (в формате +7…): "
-        ).strip()
+        phone = phone_hint or input("Номер телефона (в формате +7…): ").strip()
         await client.send_code_request(phone)
         code = input("Код из Telegram: ").strip()
         try:
@@ -93,8 +137,73 @@ async def _login() -> int:
         f"✓ Авторизован: {getattr(me, 'first_name', '')} "
         f"(@{getattr(me, 'username', '—')}, id={getattr(me, 'id', '?')})"
     )
-    print(f"  Файл сессии: {settings.session_path}")
+    print(f"  Файл сессии: {path}")
     await client.disconnect()
+
+    with session_scope() as session:
+        accounts_service.update_identity(
+            session,
+            account_id,
+            tg_user_id=getattr(me, "id", None),
+            username=getattr(me, "username", None),
+        )
+    return 0
+
+
+async def _accounts() -> int:
+    """Показать аккаунты и их балансы."""
+    from app.db import init_db, session_scope
+    from app.services import accounts as accounts_service
+
+    init_db()
+    with session_scope() as session:
+        accounts_service.adopt_legacy(session)
+        rows = accounts_service.all_accounts(session)
+        cards = [
+            {
+                "name": a.name,
+                "api_id": a.api_id,
+                "username": a.tg_username,
+                "active": a.is_active,
+                "trade": a.can_trade,
+                "authorized": accounts_service.is_authorized(a),
+                "stars": a.stars_balance,
+                "ton": a.ton_balance,
+                "flood": a.flood_until,
+                "error": a.last_error,
+            }
+            for a in rows
+        ]
+
+    if not cards:
+        print("Аккаунтов нет. Добавьте в панели: раздел «Аккаунты».")
+        return 0
+
+    print("Опрашиваю балансы…\n")
+    await accounts_service.refresh_balances()
+
+    with session_scope() as session:
+        for account in accounts_service.all_accounts(session):
+            state = []
+            if not account.is_active:
+                state.append("выключен")
+            if not account.can_trade:
+                state.append("только поиск")
+            if not accounts_service.is_authorized(account):
+                state.append("ВХОД НЕ ВЫПОЛНЕН")
+            if account.flood_until:
+                state.append(f"пауза до {account.flood_until:%H:%M}")
+
+            print(f"{account.name}")
+            print(f"  Telegram : @{account.tg_username or '—'} "
+                  f"(api_id {account.api_id})")
+            print(f"  Stars    : {account.stars_balance if account.stars_balance is not None else '—'}")
+            print(f"  TON      : {account.ton_balance if account.ton_balance is not None else '—'}")
+            if state:
+                print(f"  Состояние: {', '.join(state)}")
+            if account.last_error:
+                print(f"  Ошибка   : {account.last_error[:120]}")
+            print()
     return 0
 
 
@@ -484,7 +593,12 @@ def main(argv: list[str] | None = None) -> int:
             "doctor",
             "contract",
             "env-sync",
+            "accounts",
         ],
+    )
+    parser.add_argument(
+        "--account",
+        help="имя аккаунта для команды login",
     )
     parser.add_argument(
         "market",
@@ -512,9 +626,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in sync_commands:
         return sync_commands[args.command]()
 
+    if args.command == "login":
+        return asyncio.run(_login(args.account))
+
     async_commands = {
-        "login": _login,
         "whoami": _whoami,
+        "accounts": _accounts,
         "balance": _balance,
         "probe": _probe,
         "scan": _scan,

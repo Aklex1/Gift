@@ -77,29 +77,61 @@ async def refresh_fx(session: Session) -> Decimal | None:
     return rate
 
 
+def _search_adapters(market: Market) -> list:
+    """Адаптеры, которыми можно вести поиск на площадке.
+
+    Для Telegram это по одному адаптеру на каждый пригодный аккаунт:
+    FloodWait считается по аккаунту, поэтому коллекции распределяются
+    между ними и общий проход идёт быстрее, не приближаясь к порогу.
+    """
+    if market is not Market.TELEGRAM:
+        return [get_adapter(market)]
+
+    from app.adapters.registry import telegram_adapters
+
+    with session_scope() as session:
+        adapters = telegram_adapters(session)
+    return adapters or [get_adapter(market)]
+
+
 async def collect_listings(
     market: Market, *, collections: list[str], limit: int
 ) -> list[ListingDTO]:
     """Собрать активные лоты площадки по списку коллекций."""
-    adapter = get_adapter(market)
-    if not adapter.supports(Capability.SEARCH):
+    adapters = [a for a in _search_adapters(market) if a.supports(Capability.SEARCH)]
+    if not adapters:
         return []
 
     out: list[ListingDTO] = []
     targets: list[str | None] = list(collections) if collections else [None]
-    for collection in targets:
+    #: Коллекции раздаются аккаунтам по кругу.
+    exhausted: set[int] = set()
+
+    for index, collection in enumerate(targets):
+        if len(exhausted) >= len(adapters):
+            break
+        # Пропускаем аккаунты, которые уже упёрлись в лимит.
+        for offset in range(len(adapters)):
+            slot = (index + offset) % len(adapters)
+            if slot not in exhausted:
+                break
+        else:
+            break
+
+        adapter = adapters[slot]
+        label = getattr(adapter, "label", market.value)
         try:
-            rows = await adapter.search(collection=collection, limit=limit)
-            out.extend(rows)
+            out.extend(await adapter.search(collection=collection, limit=limit))
         except RateLimited as exc:
-            log.warning("%s: лимит запросов, пропускаю проход (%s)", market.value, exc)
-            break
+            log.warning("%s (%s): лимит запросов, аккаунт пропущен: %s",
+                        market.value, label, exc)
+            exhausted.add(slot)
         except AdapterError as exc:
-            log.warning("%s: поиск недоступен: %s", market.value, exc)
-            break
-        except Exception as exc:  # noqa: BLE001 - один рынок не роняет скан
-            log.exception("%s: ошибка поиска: %s", market.value, exc)
-            break
+            log.warning("%s (%s): поиск недоступен: %s", market.value, label, exc)
+            exhausted.add(slot)
+        except Exception as exc:  # noqa: BLE001 - один аккаунт не роняет скан
+            log.exception("%s (%s): ошибка поиска: %s", market.value, label, exc)
+            exhausted.add(slot)
     return out
 
 

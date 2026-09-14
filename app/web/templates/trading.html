@@ -60,6 +60,22 @@
         <span class="unit">{{ m.currency }}</span>
       </label>
 
+      <label class="cap">
+        Лимит за сутки
+        <input type="text" name="daily__{{ m.key }}" inputmode="decimal"
+               value="{{ m.daily.limit if m.daily.limit else '' }}" placeholder="не задан">
+        <span class="unit">{{ m.currency }}</span>
+      </label>
+
+      {% if m.daily.limit %}
+      <span class="spent muted">
+        сегодня: {{ '%.2f'|format(m.daily.spent|float) }} /
+        {{ '%.2f'|format(m.daily.limit|float) }}
+      </span>
+      {% elif m.daily.spent %}
+      <span class="spent muted">сегодня: {{ '%.2f'|format(m.daily.spent|float) }}</span>
+      {% endif %}
+
       <div class="market-state muted">
         {% if not m.has_token %}
           <span class="warn-text">нет токена — задайте в разделе «Настройки»</span>
@@ -72,6 +88,29 @@
     </div>
   </div>
   {% endfor %}
+
+  <h2>Общий лимит за сутки</h2>
+  <div class="market">
+    <label class="cap">
+      Не тратить за сутки больше
+      <input type="text" name="daily_total" inputmode="decimal"
+             value="{{ daily_total.limit if daily_total.limit else '' }}"
+             placeholder="не задан">
+      <span class="unit">STARS</span>
+    </label>
+    {% if daily_total.limit %}
+    <span class="spent muted">
+      потрачено сегодня: {{ '%.0f'|format(daily_total.spent|float) }},
+      осталось {{ '%.0f'|format(daily_total.remaining|float) }}
+    </span>
+    {% endif %}
+    <div class="market-state muted">
+      Считается по фактическим покупкам за сутки UTC. Останавливает
+      торговлю, даже если бюджет стратегии ещё не исчерпан — это
+      предохранитель от слишком быстрого расхода. Срабатывает более
+      строгий из двух лимитов: общего и по площадке.
+    </div>
+  </div>
 
   <h2>Автономный режим для приватных площадок</h2>
   <label class="switch danger-switch">

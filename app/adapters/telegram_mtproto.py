@@ -36,7 +36,7 @@ from app.adapters.base import (
     OutcomeUnknown,
     SaleDTO,
 )
-from app.adapters.telegram_gateway import gateway
+from app.adapters.telegram_gateway import TelegramGateway, default_gateway
 from app.enums import Currency, Market
 
 log = logging.getLogger(__name__)
@@ -140,12 +140,36 @@ class TelegramAdapter(MarketAdapter):
         Capability.TRANSFER: CapabilityStatus.SUPPORTED,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, gateway: TelegramGateway | None = None) -> None:
+        """Адаптер конкретного торгового аккаунта.
+
+        Args:
+            gateway: шлюз аккаунта. Без него берётся аккаунт по
+                умолчанию — первый активный в таблице.
+        """
+        self._gateway = gateway
         #: Кэш каталога коллекций: title(lower) -> gift_id.
         self._catalog: dict[str, int] = {}
         self._catalog_at: dt.datetime | None = None
         #: floor по коллекции из каталога: gift_id -> resell_min_stars.
         self._floors: dict[int, Decimal] = {}
+
+    @property
+    def gateway(self) -> TelegramGateway:
+        """Шлюз, через который идут все вызовы этого адаптера."""
+        if self._gateway is None:
+            self._gateway = default_gateway()
+        return self._gateway
+
+    @property
+    def account_id(self) -> int | None:
+        """Аккаунт, которому принадлежит адаптер."""
+        return self.gateway.account_id
+
+    @property
+    def label(self) -> str:
+        """Имя аккаунта для сообщений."""
+        return self.gateway.label
 
     # ------------------------------------------------------------------
     # Каталог
@@ -164,7 +188,7 @@ class TelegramAdapter(MarketAdapter):
 
         from telethon.tl import functions
 
-        res = await gateway.call(functions.payments.GetStarGiftsRequest(hash=0))
+        res = await self.gateway.call(functions.payments.GetStarGiftsRequest(hash=0))
         catalog: dict[str, int] = {}
         floors: dict[int, Decimal] = {}
         for gift in getattr(res, "gifts", None) or []:
@@ -237,7 +261,7 @@ class TelegramAdapter(MarketAdapter):
             offset = ""
             fetched = 0
             while fetched < per_target:
-                res = await gateway.call(
+                res = await self.gateway.call(
                     functions.payments.GetResaleStarGiftsRequest(
                         gift_id=gift_id,
                         offset=offset,
@@ -292,7 +316,7 @@ class TelegramAdapter(MarketAdapter):
         """
         from telethon.tl import functions
 
-        res = await gateway.call(
+        res = await self.gateway.call(
             functions.payments.GetUniqueStarGiftValueInfoRequest(slug=slug)
         )
         currency = (getattr(res, "currency", None) or "XTR").upper()
@@ -326,7 +350,7 @@ class TelegramAdapter(MarketAdapter):
         self._require(Capability.HISTORY)
         from telethon.tl import functions, types
 
-        res = await gateway.call(
+        res = await self.gateway.call(
             functions.payments.GetStarsTransactionsRequest(
                 peer=types.InputPeerSelf(), offset="", limit=min(limit, 100)
             )
@@ -355,14 +379,14 @@ class TelegramAdapter(MarketAdapter):
         from telethon.tl import functions, types
 
         out: list[BalanceDTO] = []
-        res = await gateway.call(
+        res = await self.gateway.call(
             functions.payments.GetStarsStatusRequest(peer=types.InputPeerSelf())
         )
         amount, currency = _amount_to_money(getattr(res, "balance", None))
         out.append(BalanceDTO(market=self.market, currency=currency, amount=amount))
 
         try:
-            res_ton = await gateway.call(
+            res_ton = await self.gateway.call(
                 functions.payments.GetStarsStatusRequest(
                     peer=types.InputPeerSelf(), ton=True
                 )
@@ -387,7 +411,7 @@ class TelegramAdapter(MarketAdapter):
         out: list[ListingDTO] = []
         offset = ""
         for _ in range(10):  # не более 10 страниц за проход
-            res = await gateway.call(
+            res = await self.gateway.call(
                 functions.payments.GetSavedStarGiftsRequest(
                     peer=types.InputPeerSelf(),
                     offset=offset,
@@ -459,7 +483,7 @@ class TelegramAdapter(MarketAdapter):
         from telethon.tl import functions, types
 
         # --- 1-2. Свежее чтение и точная сверка цены ---
-        fresh = await gateway.call(
+        fresh = await self.gateway.call(
             functions.payments.GetUniqueStarGiftRequest(slug=external_id)
         )
         gift = getattr(fresh, "gift", None)
@@ -488,7 +512,7 @@ class TelegramAdapter(MarketAdapter):
         invoice = types.InputInvoiceStarGiftResale(
             slug=external_id, to_id=types.InputPeerSelf()
         )
-        form = await gateway.call(
+        form = await self.gateway.call(
             functions.payments.GetPaymentFormRequest(invoice=invoice)
         )
         form_id = getattr(form, "form_id", None)
@@ -509,7 +533,7 @@ class TelegramAdapter(MarketAdapter):
 
         # --- 4. Отправка формы (реальное списание Stars) ---
         try:
-            result = await gateway.call(
+            result = await self.gateway.call(
                 functions.payments.SendStarsFormRequest(form_id=form_id, invoice=invoice),
                 write=True,
             )
@@ -561,7 +585,7 @@ class TelegramAdapter(MarketAdapter):
         amount = types.StarsAmount(amount=whole, nanos=nanos)
 
         try:
-            await gateway.call(
+            await self.gateway.call(
                 functions.payments.UpdateStarGiftPriceRequest(
                     stargift=stargift, resell_amount=amount
                 ),
@@ -594,10 +618,10 @@ class TelegramAdapter(MarketAdapter):
         if not slug:
             return ExecutionResult(ok=None, detail="Нечего сверять: нет slug")
 
-        me = await gateway.me()
+        me = await self.gateway.me()
         my_id = getattr(me, "id", None)
 
-        res = await gateway.call(functions.payments.GetUniqueStarGiftRequest(slug=slug))
+        res = await self.gateway.call(functions.payments.GetUniqueStarGiftRequest(slug=slug))
         gift = getattr(res, "gift", None)
         if gift is None:
             return ExecutionResult(ok=False, external_ref=slug, detail="Подарок не найден")
@@ -621,12 +645,12 @@ class TelegramAdapter(MarketAdapter):
         self._require(Capability.TRANSFER)
         from telethon.tl import functions
 
-        client = await gateway.client()
+        client = await self.gateway.client()
         peer = await client.get_input_entity(to_username)
         stargift = self._saved_ref(
             slug=gift_ref.slug, msg_id=gift_ref.attributes.get("msg_id")
         )
-        await gateway.call(
+        await self.gateway.call(
             functions.payments.TransferStarGiftRequest(stargift=stargift, to_id=peer),
             write=True,
         )

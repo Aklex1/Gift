@@ -396,6 +396,9 @@ class Strategy(Base, TimestampMixin):
 
     max_open_positions: Mapped[int] = mapped_column(Integer, default=5)
 
+    #: Торговать только с этого аккаунта. None — с любого доступного.
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+
     budget: Mapped[Budget | None] = relationship()
 
 
@@ -426,6 +429,7 @@ class Intent(Base, TimestampMixin):
 
     strategy_id: Mapped[int | None] = mapped_column(ForeignKey("strategies.id"), index=True)
     gift_id: Mapped[int | None] = mapped_column(ForeignKey("gifts.id"), index=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), index=True)
     listing_external_id: Mapped[str | None] = mapped_column(String(128))
 
     #: Цена, на которую рассчитывали при планировании.
@@ -492,6 +496,8 @@ class Position(Base, TimestampMixin):
     buy_currency: Mapped[Currency] = mapped_column(EnumStr(Currency), default=Currency.STARS)
     bought_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
     buy_intent_id: Mapped[int | None] = mapped_column(ForeignKey("intents.id"))
+    #: Аккаунт, на котором физически лежит подарок.
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), index=True)
 
     # --- выставление ---
     list_market: Mapped[Market | None] = mapped_column(EnumStr(Market))
@@ -562,6 +568,54 @@ class Candidate(Base, TimestampMixin):
 
     gift: Mapped[Gift] = relationship()
     strategy: Mapped[Strategy] = relationship()
+
+
+class Account(Base, TimestampMixin):
+    """Торговый Telegram-аккаунт.
+
+    Аккаунтов может быть несколько: это распределяет нагрузку на
+    поиск (FloodWait считается по аккаунту) и позволяет держать
+    средства раздельно.
+    """
+
+    __tablename__ = "accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: Короткое имя для интерфейса и команд CLI.
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    #: Учётные данные с my.telegram.org. Хеш хранится зашифрованным.
+    api_id: Mapped[int] = mapped_column(Integer)
+    api_hash_enc: Mapped[str] = mapped_column(Text)
+    phone: Mapped[str | None] = mapped_column(String(32))
+
+    #: Имя файла сессии Telethon внутри каталога данных.
+    session_name: Mapped[str] = mapped_column(String(64), unique=True)
+
+    #: Telegram id и имя, заполняются после входа.
+    tg_user_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    tg_username: Mapped[str | None] = mapped_column(String(64))
+
+    #: Адрес кошелька TON для наблюдения за балансом.
+    ton_address: Mapped[str | None] = mapped_column(String(128))
+
+    #: Выключенный аккаунт не используется ни для поиска, ни для сделок.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    #: Разрешены ли покупки с этого аккаунта (иначе только поиск).
+    can_trade: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    #: Последние известные балансы — обновляются при опросе.
+    stars_balance: Mapped[Decimal | None] = mapped_column(Money)
+    ton_balance: Mapped[Decimal | None] = mapped_column(Money)
+    balance_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
+    #: Пока не истечёт, аккаунт под FloodWait и не опрашивается.
+    flood_until: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<Account {self.name}>"
 
 
 class Setting(Base, TimestampMixin):

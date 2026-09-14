@@ -38,6 +38,28 @@ def get_adapter(market: Market | str) -> MarketAdapter:
     return _ADAPTERS[market]
 
 
+def telegram_adapters(session) -> list[TelegramAdapter]:
+    """Адаптеры Telegram по одному на каждый пригодный аккаунт.
+
+    Поиск распределяется между ними: FloodWait считается по аккаунту,
+    поэтому несколько сессий позволяют сканировать чаще.
+    """
+    from app.adapters.telegram_gateway import gateway_for
+    from app.services import accounts as accounts_service
+
+    out: list[TelegramAdapter] = []
+    for account in accounts_service.usable(session):
+        out.append(TelegramAdapter(gateway_for(account)))
+    return out
+
+
+def telegram_adapter_for(account) -> TelegramAdapter:
+    """Адаптер Telegram конкретного аккаунта."""
+    from app.adapters.telegram_gateway import gateway_for
+
+    return TelegramAdapter(gateway_for(account))
+
+
 def all_adapters() -> list[MarketAdapter]:
     """Все адаптеры в фиксированном порядке."""
     return [get_adapter(m) for m in Market]
@@ -111,10 +133,13 @@ async def probe_all() -> dict[str, dict[str, str]]:
 
 
 async def close_all() -> None:
-    """Закрыть все сетевые соединения адаптеров."""
+    """Закрыть все сетевые соединения адаптеров и сессии аккаунтов."""
+    from app.adapters import telegram_gateway
+
     for adapter in list(_ADAPTERS.values()):
         try:
             await adapter.close()
         except Exception:  # noqa: BLE001
             pass
     _ADAPTERS.clear()
+    await telegram_gateway.close_all()

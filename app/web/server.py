@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -325,7 +325,11 @@ async def trading_page(
     from app.adapters.registry import get_adapter
     from app.services import runtime
 
+    from app.services import limits
+
     state = runtime.snapshot()
+    with session_scope() as session:
+        daily = limits.snapshot(session)
     markets = []
     for name, item in state["markets"].items():
         market = item["market"]
@@ -345,6 +349,7 @@ async def trading_page(
                 "currency": item["currency"].value,
                 "has_token": bool(getattr(adapter, "auth", None)) or name == "telegram",
                 "operations": contract.described if contract else [],
+                "daily": daily["markets"].get(name, {}),
             }
         )
 
@@ -356,6 +361,7 @@ async def trading_page(
             "kill_switch": state["kill_switch"],
             "experimental_auto": state["allow_experimental_auto"],
             "markets": markets,
+            "daily_total": daily["total"],
             "saved": saved,
         },
     )
@@ -370,14 +376,29 @@ async def trading_save(
     Каждое изменение пишется в журнал аудита: это те переключатели,
     что решают, тратятся деньги или нет.
     """
-    from decimal import Decimal, InvalidOperation
-
     from app.adapters.registry import _ADAPTERS
     from app.enums import Market, TradeMode
-    from app.services import runtime
+    from app.services import limits, runtime
 
     form = await request.form()
     changed = 0
+
+    def _decimal(raw: object) -> Decimal | None:
+        """Разобрать число из формы."""
+        text = str(raw or "").strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            return Decimal(text)
+        except (InvalidOperation, ValueError):
+            return None
+
+    total_daily = _decimal(form.get("daily_total"))
+    if total_daily is not None and total_daily != (
+        limits.daily_total_limit() or Decimal(0)
+    ):
+        limits.set_daily_total_limit(total_daily)
+        changed += 1
 
     raw_mode = str(form.get("mode") or "").strip().lower()
     if raw_mode:
@@ -400,20 +421,164 @@ async def trading_save(
             runtime.set_write_enabled(market, wanted)
             changed += 1
 
-        raw_cap = str(form.get(f"cap__{market.value}") or "").strip().replace(",", ".")
-        if raw_cap:
-            try:
-                cap = Decimal(raw_cap)
-            except (InvalidOperation, ValueError):
-                continue
+        cap = _decimal(form.get(f"cap__{market.value}"))
+        if cap is not None:
             if cap != (runtime.trade_cap(market) or Decimal(0)):
                 runtime.set_trade_cap(market, cap)
                 changed += 1
+
+        daily = _decimal(form.get(f"daily__{market.value}"))
+        if daily is not None and daily != (
+            limits.daily_market_limit(market) or Decimal(0)
+        ):
+            limits.set_daily_market_limit(market, daily)
+            changed += 1
 
     if changed:
         # Боевой режим влияет на набор возможностей адаптера.
         _ADAPTERS.clear()
     return RedirectResponse(f"/trading?saved={changed}", status_code=303)
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(
+    request: Request, saved: str = "", _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Торговые аккаунты Telegram с балансами."""
+    from app.services import accounts as accounts_service
+
+    with session_scope() as session:
+        rows = []
+        for account in accounts_service.all_accounts(session):
+            rows.append(
+                {
+                    "id": account.id,
+                    "name": account.name,
+                    "api_id": account.api_id,
+                    "phone": account.phone,
+                    "username": account.tg_username,
+                    "tg_user_id": account.tg_user_id,
+                    "authorized": accounts_service.is_authorized(account),
+                    "session_name": account.session_name,
+                    "is_active": account.is_active,
+                    "can_trade": account.can_trade,
+                    "stars": account.stars_balance,
+                    "ton": account.ton_balance,
+                    "ton_address": account.ton_address,
+                    "balance_at": account.balance_at,
+                    "flood_until": account.flood_until,
+                    "error": account.last_error,
+                }
+            )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="accounts.html",
+        context={"accounts": rows, "saved": saved, "fmt": gifts_service.format_stars},
+    )
+
+
+@app.post("/accounts/add")
+async def accounts_add(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Добавить торговый аккаунт."""
+    from app.services import accounts as accounts_service
+
+    form = await request.form()
+    try:
+        api_id = int(str(form.get("api_id") or "0").strip())
+    except ValueError:
+        return RedirectResponse("/accounts?saved=api_id-не-число", status_code=303)
+
+    try:
+        with session_scope() as session:
+            account = accounts_service.create(
+                session,
+                name=str(form.get("name") or "").strip(),
+                api_id=api_id,
+                api_hash=str(form.get("api_hash") or "").strip(),
+                phone=str(form.get("phone") or "").strip() or None,
+                ton_address=str(form.get("ton_address") or "").strip() or None,
+            )
+            name = account.name
+    except accounts_service.AccountError as exc:
+        return RedirectResponse(f"/accounts?saved={exc}", status_code=303)
+
+    return RedirectResponse(
+        f"/accounts?saved=Аккаунт {name} добавлен. Войдите: gift-cli login --account {name}",
+        status_code=303,
+    )
+
+
+@app.post("/accounts/{account_id}/toggle")
+async def accounts_toggle(
+    account_id: int, request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Включить/выключить аккаунт или право торговли."""
+    from app.models import Account
+
+    form = await request.form()
+    field = str(form.get("field") or "")
+    with session_scope() as session:
+        account = session.get(Account, account_id)
+        if account is None:
+            return RedirectResponse("/accounts", status_code=303)
+        if field == "active":
+            account.is_active = not account.is_active
+        elif field == "trade":
+            account.can_trade = not account.can_trade
+        session.add(
+            AuditLog(
+                actor="web",
+                action=f"account.{field}",
+                target=account.name,
+                payload={"active": account.is_active, "can_trade": account.can_trade},
+            )
+        )
+    return RedirectResponse("/accounts", status_code=303)
+
+
+@app.post("/accounts/{account_id}/delete")
+async def accounts_delete(
+    account_id: int, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Удалить аккаунт вместе с файлом сессии."""
+    from app.services import accounts as accounts_service
+
+    with session_scope() as session:
+        accounts_service.delete(session, account_id)
+    from app.adapters import telegram_gateway
+
+    telegram_gateway.forget(account_id)
+    return RedirectResponse("/accounts?saved=Аккаунт удалён", status_code=303)
+
+
+@app.post("/accounts/refresh")
+async def accounts_refresh(_: str = Depends(require_auth)) -> RedirectResponse:
+    """Опросить балансы всех аккаунтов."""
+    from app.services import accounts as accounts_service
+
+    report = await accounts_service.refresh_balances()
+    return RedirectResponse(
+        f"/accounts?saved=Опрошено {report['checked']}, "
+        f"успешно {report['ok']}, с ошибкой {report['failed']}",
+        status_code=303,
+    )
+
+
+@app.post("/accounts/{account_id}/verify")
+async def accounts_verify(
+    account_id: int, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Проверить сессию аккаунта."""
+    from app.services import accounts as accounts_service
+
+    result = await accounts_service.verify_session(account_id)
+    mark = "✓" if result.get("ok") else "✗"
+    return RedirectResponse(
+        f"/accounts?saved={mark} {result.get('detail')}", status_code=303
+    )
 
 
 @app.get("/audit", response_class=HTMLResponse)

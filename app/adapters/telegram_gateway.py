@@ -1,8 +1,10 @@
-"""Telethon-шлюз: одна пользовательская сессия на всё приложение.
+"""Telethon-шлюзы: по одной сессии на торговый аккаунт.
 
-ТЗ требует именно такой контур: одна user session, файловая блокировка,
-очередь с приоритетами, дедупликация, пейсинг и корректная обработка
-FloodWait. Все MTProto-вызовы приложения проходят здесь.
+ТЗ требует аккуратного обращения с пользовательской сессией: очередь,
+пейсинг, дедупликация и корректная обработка FloodWait. Всё это
+сохраняется, но теперь на каждый аккаунт свой экземпляр: FloodWait
+Telegram считается по аккаунту, и блокировка одного не должна
+останавливать остальные.
 """
 
 from __future__ import annotations
@@ -10,32 +12,39 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from app.adapters.base import AuthRequired, OutcomeUnknown, RateLimited
 from app.config import settings
-from app.services import secrets
 
 log = logging.getLogger(__name__)
 
-#: Минимальная пауза между любыми двумя MTProto-запросами, секунд.
-#: Защита аккаунта от блокировки за агрессивный опрос.
+#: Минимальная пауза между любыми двумя запросами одного аккаунта.
 MIN_INTERVAL = 0.9
 
-#: Пауза между write-вызовами (покупка/листинг) — строже, чем для чтения.
+#: Пауза между write-вызовами — строже, чем для чтения.
 WRITE_INTERVAL = 2.5
 
 
 class TelegramGateway:
-    """Единственная точка доступа к MTProto.
+    """Единственная точка доступа к MTProto для одного аккаунта."""
 
-    Сериализует вызовы через глобальный семафор, соблюдает интервалы
-    и превращает сетевые обрывы write-операций в OutcomeUnknown.
-    """
+    def __init__(
+        self,
+        *,
+        api_id: int,
+        api_hash: str,
+        session_path: Path,
+        label: str = "основной",
+        account_id: int | None = None,
+    ) -> None:
+        self.api_id = api_id
+        self.api_hash = api_hash
+        self.session_path = session_path
+        self.label = label
+        self.account_id = account_id
 
-    _instance: "TelegramGateway | None" = None
-
-    def __init__(self) -> None:
         self._client: Any = None
         self._lock = asyncio.Lock()
         self._last_call = 0.0
@@ -45,42 +54,25 @@ class TelegramGateway:
         self._me: Any = None
 
     # ------------------------------------------------------------------
-    @classmethod
-    def instance(cls) -> "TelegramGateway":
-        """Синглтон шлюза."""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def credentials() -> tuple[int, str]:
-        """api_id и api_hash: сначала из панели, затем из .env."""
-        raw_id = secrets.resolve("TG_API_ID", str(settings.tg_api_id or ""))
-        api_hash = secrets.resolve("TG_API_HASH", settings.tg_api_hash)
-        try:
-            api_id = int(raw_id) if raw_id else 0
-        except ValueError:
-            api_id = 0
-        return (api_id, api_hash)
-
     def is_configured(self) -> bool:
-        """Заданы ли api_id/api_hash."""
-        api_id, api_hash = self.credentials()
-        return bool(api_id and api_hash)
+        """Заданы ли учётные данные."""
+        return bool(self.api_id and self.api_hash)
 
     def session_exists(self) -> bool:
         """Есть ли файл авторизованной сессии."""
-        return settings.session_path.exists()
+        return self.session_path.exists()
+
+    @property
+    def flood_seconds_left(self) -> float:
+        """Сколько секунд осталось до конца FloodWait."""
+        return max(0.0, self._flood_until - time.monotonic())
 
     async def client(self) -> Any:
         """Получить подключённый и авторизованный TelegramClient."""
-        api_id, api_hash = self.credentials()
-        if not (api_id and api_hash):
+        if not self.is_configured():
             raise AuthRequired(
-                "api_id / api_hash не заданы. Получите их на "
-                "https://my.telegram.org -> API development tools и укажите "
-                "в веб-панели (Настройки) либо в файле .env"
+                f"Аккаунт {self.label}: не заданы api_id / api_hash. "
+                "Укажите их в панели, раздел «Аккаунты»."
             )
         if self._client is not None and self._client.is_connected():
             return self._client
@@ -89,11 +81,11 @@ class TelegramGateway:
 
         settings.ensure_dirs()
         self._client = TelegramClient(
-            str(settings.session_path.with_suffix("")),
-            api_id,
-            api_hash,
-            # Пейсинг делаем сами; авто-ретраи Telethon на FloodWait отключены,
-            # чтобы write-операции не отправлялись повторно вслепую.
+            str(self.session_path.with_suffix("")),
+            self.api_id,
+            self.api_hash,
+            # Пейсинг делаем сами; авто-ретраи Telethon на FloodWait
+            # отключены, чтобы write-операции не уходили повторно вслепую.
             flood_sleep_threshold=0,
             connection_retries=3,
             retry_delay=2,
@@ -101,11 +93,15 @@ class TelegramGateway:
         await self._client.connect()
         if not await self._client.is_user_authorized():
             raise AuthRequired(
-                "Telegram-сессия не авторизована. Выполните на сервере: "
-                "gift-cli login"
+                f"Аккаунт {self.label}: сессия не авторизована. "
+                f"Выполните на сервере: gift-cli login --account {self.label}"
             )
         self._me = await self._client.get_me()
-        log.info("MTProto-сессия активна: id=%s", getattr(self._me, "id", "?"))
+        log.info(
+            "Аккаунт %s: сессия активна (id=%s)",
+            self.label,
+            getattr(self._me, "id", "?"),
+        )
         return self._client
 
     async def me(self) -> Any:
@@ -118,10 +114,6 @@ class TelegramGateway:
     async def call(self, request: Any, *, write: bool = False) -> Any:
         """Выполнить MTProto-запрос с пейсингом и обработкой FloodWait.
 
-        Args:
-            request: Объект запроса Telethon.
-            write: True для операций, меняющих состояние/тратящих деньги.
-
         Raises:
             RateLimited: активен FloodWait.
             OutcomeUnknown: обрыв связи ПОСЛЕ отправки write-запроса.
@@ -132,7 +124,7 @@ class TelegramGateway:
             now = time.monotonic()
             if now < self._flood_until:
                 raise RateLimited(
-                    "Активен FloodWait от Telegram",
+                    f"Аккаунт {self.label}: активен FloodWait",
                     retry_after=self._flood_until - now,
                 )
 
@@ -148,9 +140,16 @@ class TelegramGateway:
                 result = await client(request)
             except errors.FloodWaitError as exc:
                 self._flood_until = time.monotonic() + exc.seconds + 1
-                log.warning("FloodWait %s c на %s", exc.seconds, type(request).__name__)
+                log.warning(
+                    "Аккаунт %s: FloodWait %s c на %s",
+                    self.label,
+                    exc.seconds,
+                    type(request).__name__,
+                )
+                self._remember_flood(exc.seconds)
                 raise RateLimited(
-                    f"FloodWait {exc.seconds} c", retry_after=float(exc.seconds)
+                    f"Аккаунт {self.label}: FloodWait {exc.seconds} c",
+                    retry_after=float(exc.seconds),
                 ) from exc
             except (errors.RPCError, ValueError, TypeError):
                 # Явный отказ сервера — исход определён, деньги не списаны.
@@ -159,7 +158,8 @@ class TelegramGateway:
                 if write:
                     # Запрос ушёл, ответ потерян. Покупка могла пройти.
                     raise OutcomeUnknown(
-                        f"Связь оборвалась после отправки {type(request).__name__}: {exc}"
+                        f"Аккаунт {self.label}: связь оборвалась после отправки "
+                        f"{type(request).__name__}: {exc}"
                     ) from exc
                 raise
             finally:
@@ -167,6 +167,19 @@ class TelegramGateway:
                 if write:
                     self._last_write = self._last_call
             return result
+
+    def _remember_flood(self, seconds: float) -> None:
+        """Записать FloodWait в карточку аккаунта, чтобы его не опрашивали."""
+        if self.account_id is None:
+            return
+        try:
+            from app.db import session_scope
+            from app.services import accounts as accounts_service
+
+            with session_scope() as session:
+                accounts_service.mark_flood(session, self.account_id, seconds)
+        except Exception as exc:  # noqa: BLE001 - учёт не должен ломать вызов
+            log.debug("Не удалось записать FloodWait аккаунта: %s", exc)
 
     # ------------------------------------------------------------------
     async def close(self) -> None:
@@ -179,4 +192,92 @@ class TelegramGateway:
             self._client = None
 
 
-gateway = TelegramGateway.instance()
+# ----------------------------------------------------------------------
+# Реестр шлюзов
+# ----------------------------------------------------------------------
+#: account_id -> шлюз. Ключ None — аккаунт из .env (до миграции).
+_gateways: dict[int | None, TelegramGateway] = {}
+
+
+def gateway_for(account: Any) -> TelegramGateway:
+    """Получить (и закэшировать) шлюз аккаунта."""
+    from app.services import accounts as accounts_service
+
+    key = account.id
+    existing = _gateways.get(key)
+    api_hash = accounts_service.api_hash_of(account)
+    path = accounts_service.session_path(account)
+
+    # Учётные данные могли поменяться в панели — пересоздаём шлюз.
+    if existing is not None and (
+        existing.api_id == account.api_id
+        and existing.api_hash == api_hash
+        and existing.session_path == path
+    ):
+        return existing
+
+    gateway = TelegramGateway(
+        api_id=account.api_id,
+        api_hash=api_hash,
+        session_path=path,
+        label=account.name,
+        account_id=account.id,
+    )
+    _gateways[key] = gateway
+    return gateway
+
+
+def legacy_gateway() -> TelegramGateway:
+    """Шлюз по данным из .env — для установок без таблицы аккаунтов."""
+    existing = _gateways.get(None)
+    if existing is not None:
+        return existing
+
+    from app.services import secrets
+
+    raw_id = secrets.resolve("TG_API_ID", str(settings.tg_api_id or ""))
+    try:
+        api_id = int(raw_id) if raw_id else 0
+    except ValueError:
+        api_id = 0
+
+    gateway = TelegramGateway(
+        api_id=api_id,
+        api_hash=secrets.resolve("TG_API_HASH", settings.tg_api_hash),
+        session_path=settings.session_path,
+        label="основной",
+    )
+    _gateways[None] = gateway
+    return gateway
+
+
+def default_gateway() -> TelegramGateway:
+    """Шлюз аккаунта по умолчанию.
+
+    Берётся первый пригодный аккаунт из таблицы; если таблица пуста,
+    используются данные из .env.
+    """
+    try:
+        from app.db import session_scope
+        from app.services import accounts as accounts_service
+
+        with session_scope() as session:
+            rows = accounts_service.all_accounts(session)
+            for account in rows:
+                if account.is_active:
+                    return gateway_for(account)
+    except Exception as exc:  # noqa: BLE001 - БД может быть недоступна
+        log.debug("Список аккаунтов недоступен: %s", exc)
+    return legacy_gateway()
+
+
+async def close_all() -> None:
+    """Закрыть все сессии."""
+    for gateway in list(_gateways.values()):
+        await gateway.close()
+    _gateways.clear()
+
+
+def forget(account_id: int | None) -> None:
+    """Забыть шлюз аккаунта — например, после смены ключей."""
+    _gateways.pop(account_id, None)

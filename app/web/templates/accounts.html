@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Аккаунты — Gift{% endblock %}
+{% block content %}
+<h1>Торговые аккаунты</h1>
+
+{% if saved %}
+<div class="banner ok"><div>{{ saved }}</div></div>
+{% endif %}
+
+<p class="muted">
+  Поиск распределяется между аккаунтами: ограничение Telegram на частоту
+  запросов считается по аккаунту, поэтому несколько сессий позволяют
+  сканировать чаще. Средства тоже лежат раздельно.
+</p>
+
+<form method="post" action="/accounts/refresh" class="actions">
+  <button type="submit">Обновить балансы</button>
+</form>
+
+{% for a in accounts %}
+<div class="account {{ 'off' if not a.is_active }}">
+  <div class="account-head">
+    <b>{{ a.name }}</b>
+    {% if a.username %}<span class="muted">@{{ a.username }}</span>{% endif %}
+    {% if not a.authorized %}
+      <span class="badge yellow">вход не выполнен</span>
+    {% elif a.flood_until %}
+      <span class="badge yellow">пауза до {{ a.flood_until.strftime('%H:%M') }}</span>
+    {% else %}
+      <span class="badge green">готов</span>
+    {% endif %}
+    {% if not a.is_active %}<span class="badge">выключен</span>{% endif %}
+    {% if not a.can_trade %}<span class="badge">только поиск</span>{% endif %}
+  </div>
+
+  <div class="account-balances">
+    <div class="bal">
+      <span class="label">Stars</span>
+      <span class="value">{{ fmt(a.stars) if a.stars is not none else '—' }} ★</span>
+    </div>
+    <div class="bal">
+      <span class="label">TON</span>
+      <span class="value">{{ '%.4f'|format(a.ton|float) if a.ton is not none else '—' }}</span>
+    </div>
+    <div class="bal">
+      <span class="label">Обновлено</span>
+      <span class="value small">
+        {{ a.balance_at.strftime('%d.%m %H:%M') if a.balance_at else 'не опрашивалось' }}
+      </span>
+    </div>
+  </div>
+
+  <div class="account-meta muted">
+    api_id {{ a.api_id }} · сессия <code>{{ a.session_name }}</code>
+    {% if a.phone %} · {{ a.phone }}{% endif %}
+    {% if a.ton_address %}<br>кошелёк TON: <code>{{ a.ton_address }}</code>{% endif %}
+  </div>
+
+  {% if not a.authorized %}
+  <div class="account-hint warn-text">
+    Выполните на сервере: <code>gift-cli login --account {{ a.name }}</code>
+  </div>
+  {% endif %}
+  {% if a.error %}
+  <div class="account-hint warn-text">Последняя ошибка: {{ a.error }}</div>
+  {% endif %}
+
+  <div class="account-actions">
+    <form method="post" action="/accounts/{{ a.id }}/verify">
+      <button type="submit" class="secondary">Проверить сессию</button></form>
+    <form method="post" action="/accounts/{{ a.id }}/toggle">
+      <input type="hidden" name="field" value="active">
+      <button type="submit" class="secondary">
+        {{ 'Выключить' if a.is_active else 'Включить' }}</button></form>
+    <form method="post" action="/accounts/{{ a.id }}/toggle">
+      <input type="hidden" name="field" value="trade">
+      <button type="submit" class="secondary">
+        {{ 'Запретить торговлю' if a.can_trade else 'Разрешить торговлю' }}</button></form>
+    <form method="post" action="/accounts/{{ a.id }}/delete"
+          onsubmit="return confirm('Удалить аккаунт {{ a.name }} и файл его сессии?')">
+      <button type="submit" class="danger-btn">Удалить</button></form>
+  </div>
+</div>
+{% else %}
+<div class="banner ok"><div>
+  Аккаунтов пока нет. Добавьте первый — форма ниже.
+</div></div>
+{% endfor %}
+
+<h2>Добавить аккаунт</h2>
+<form method="post" action="/accounts/add">
+  <table class="settings">
+    <tr>
+      <td class="skey"><label for="a-name">Имя</label>
+        <div class="muted hint">Короткое, для интерфейса и команд: основной, второй…</div></td>
+      <td class="sval"><input type="text" id="a-name" name="name" required
+             placeholder="второй"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label for="a-apiid">api_id</label>
+        <div class="muted hint">my.telegram.org → API development tools. Число.</div></td>
+      <td class="sval"><input type="text" id="a-apiid" name="api_id" required
+             placeholder="21724531"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label for="a-hash">api_hash</label>
+        <div class="muted hint">Оттуда же, 32 символа. Хранится зашифрованным.</div></td>
+      <td class="sval"><input type="password" id="a-hash" name="api_hash" required
+             autocomplete="off" placeholder="a1b2c3d4e5f6..."></td>
+    </tr>
+    <tr>
+      <td class="skey"><label for="a-phone">Телефон</label>
+        <div class="muted hint">Нужен при входе через gift-cli login.</div></td>
+      <td class="sval"><input type="text" id="a-phone" name="phone"
+             placeholder="+79991234567"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label for="a-ton">Кошелёк TON</label>
+        <div class="muted hint">Необязательно, только для показа баланса.</div></td>
+      <td class="sval"><input type="text" id="a-ton" name="ton_address"
+             placeholder="UQ..."></td>
+    </tr>
+  </table>
+  <div class="actions"><button type="submit">Добавить</button></div>
+</form>
+
+<p class="muted">
+  Каждый аккаунт — отдельная пара api_id/api_hash и свой файл сессии.
+  После добавления войдите на сервере командой
+  <code>gift-cli login --account &lt;имя&gt;</code>: Telegram пришлёт код
+  подтверждения.
+</p>
+{% endblock %}
