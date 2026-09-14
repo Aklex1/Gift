@@ -27,6 +27,7 @@ from app.enums import Market, TradeMode
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Intent, Position, Strategy, utcnow
 from app.services import budget as budget_service
+from app.services import secrets as secrets_module
 from app.services import gifts as gifts_service
 from app.services import portfolio
 
@@ -411,7 +412,7 @@ async def trading_page(
     from app.adapters.registry import get_adapter
     from app.services import runtime
 
-    from app.services import fx, limits
+    from app.services import fx, limits, notify
 
     state = runtime.snapshot()
     with session_scope() as session:
@@ -450,6 +451,12 @@ async def trading_page(
             "markets": markets,
             "daily_total": daily["total"],
             "fx": rates,
+            "notify_kinds": notify.KINDS,
+            "notify_enabled": notify.enabled_kinds(),
+            "notify_ready": bool(
+                secrets_module.resolve("BOT_TOKEN", settings.bot_token)
+                and secrets_module.resolve("OWNER_IDS", settings.owner_ids).strip()
+            ),
             "saved": saved,
         },
     )
@@ -922,6 +929,26 @@ async def strategies_delete(
             session.delete(item)
             session.add(AuditLog(actor="web", action="strategy.delete", target=name))
     return RedirectResponse("/strategies?saved=Стратегия удалена", status_code=303)
+
+
+@app.post("/trading/notify")
+async def trading_notify(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Сохранить набор уведомлений и при желании прислать пробное."""
+    from app.services import notify
+
+    form = await request.form()
+    notify.set_enabled_kinds(set(form.getlist("kinds")))
+
+    if form.get("test"):
+        ok = await notify.send(
+            "🔔 <b>Проверка уведомлений</b>\n\n"
+            "Если вы видите это сообщение, оповещения настроены верно."
+        )
+        mark = "отправлено" if ok else "не отправлено — проверьте токен и владельцев"
+        return RedirectResponse(f"/trading?saved=Пробное сообщение {mark}", status_code=303)
+    return RedirectResponse("/trading?saved=Уведомления сохранены", status_code=303)
 
 
 @app.post("/trading/fx")

@@ -130,6 +130,36 @@
   </div>
 </form>
 
+<h2>Уведомления</h2>
+{% if not notify_ready %}
+<div class="banner danger"><div>
+  Не заданы токен бота или владельцы — уведомления отправлять некому.
+  Заполните в разделе <a href="/settings">Настройки</a>.
+</div></div>
+{% endif %}
+<form method="post" action="/trading/notify">
+  <div class="market">
+    {% for key, title in notify_kinds.items() %}
+    <label class="inline" style="display:flex; margin:6px 0">
+      <input type="checkbox" name="kinds" value="{{ key }}"
+             {{ 'checked' if key in notify_enabled }}>
+      {{ title }}
+    </label>
+    {% endfor %}
+    <div class="market-state muted">
+      Повтор об одной и той же проблеме не приходит, пока не истечёт
+      пауза — от двух часов до суток в зависимости от вида. Когда
+      проблема уходит, приходит одно сообщение о восстановлении.
+    </div>
+  </div>
+  <div class="actions">
+    <button type="submit">Сохранить</button>
+    <button type="submit" name="test" value="1" class="secondary">
+      Прислать пробное
+    </button>
+  </div>
+</form>
+
 <h2>Курсы валют</h2>
 <form method="post" action="/trading/fx">
   <table>

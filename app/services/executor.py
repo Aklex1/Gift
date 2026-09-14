@@ -43,6 +43,7 @@ from app.enums import (
 from app.models import AuditLog, Candidate, Gift, Intent, Position, Strategy, Transaction, utcnow
 from app.services import accounts as accounts_service
 from app.services import budget as budget_service
+from app.services import gifts as gifts_service
 from app.services import limits
 from app.services import runtime
 from app.services import saga
@@ -395,12 +396,31 @@ async def execute_buy(
         if candidate is not None:
             candidate.state = "executed"
 
-        return {
+        result_payload = {
             "ok": True,
             "detail": f"куплено за {executed} {executed_currency.value}",
             "intent_id": intent_id,
             "position_id": position.id,
+            "_notify": {
+                "market": market.value,
+                "name": gifts_service.describe(session.get(Gift, gift_id))
+                if gift_id
+                else "подарок",
+                "price": executed,
+                "currency": executed_currency.value,
+            },
         }
+
+    # Уведомление вне транзакции: сеть не должна держать блокировки.
+    payload = result_payload.pop("_notify", None)
+    if payload:
+        from app.services import notify
+
+        try:
+            await notify.notify_trade(ok=True, **payload)
+        except Exception as exc:  # noqa: BLE001 - сделка важнее уведомления
+            log.warning("Уведомление о сделке не отправлено: %s", exc)
+    return result_payload
 
 
 def _adapter_for(market: Market, account_id: int | None):

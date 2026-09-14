@@ -107,6 +107,17 @@ async def task_fx() -> None:
     await _guarded("fx", run)
 
 
+async def task_alerts() -> None:
+    """Проверить, о чём стоит предупредить владельца."""
+
+    async def run() -> None:
+        from app.services import notify
+
+        await notify.check_all()
+
+    await _guarded("alerts", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -142,6 +153,7 @@ async def main() -> None:
     scheduler.add_job(task_inventory, "interval", seconds=600, id="inventory")
     scheduler.add_job(task_balances, "interval", seconds=300, id="balances")
     scheduler.add_job(task_fx, "interval", seconds=900, id="fx")
+    scheduler.add_job(task_alerts, "interval", seconds=300, id="alerts")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     scheduler.start()
 
