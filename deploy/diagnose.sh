@@ -29,6 +29,14 @@ for unit in bot web worker; do
     fi
 done
 
+if [[ "$(systemctl is-enabled "$APP_NAME-web" 2>/dev/null)" != "enabled" ]]; then
+    echo
+    bad "Сервисы не включены — именно поэтому панель отдаёт 502."
+    inf "Панели НЕ нужны ключи Telegram, её можно запустить прямо сейчас:"
+    inf "    systemctl enable --now $APP_NAME-web"
+    inf "Бот и воркер — после заполнения ключей."
+fi
+
 hdr "Порты"
 WEB_PORT="$(grep -oP '(?<=--port )\d+' "$UNIT_WEB" 2>/dev/null | head -1)"
 NGINX_PORT="$(grep -oP '(?<=listen )\d+' "$NGINX_SITE" 2>/dev/null | head -1)"

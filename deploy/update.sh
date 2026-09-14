@@ -49,6 +49,10 @@ log "1/6 Останавливаю сервисы"
 systemctl stop "$APP_NAME-bot" "$APP_NAME-worker" "$APP_NAME-web" 2>/dev/null || true
 
 log "2/6 Забираю код"
+# Каталог принадлежит служебному пользователю, а git здесь работает
+# от root — без этой пометки git отказывается с "dubious ownership".
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+
 git -C "$APP_DIR" fetch --all --quiet
 git -C "$APP_DIR" checkout "$BRANCH" --quiet
 git -C "$APP_DIR" pull --quiet

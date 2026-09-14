@@ -293,11 +293,16 @@ def cmd_doctor() -> int:
     # Секреты
     if not settings.secret_key:
         problems.append("GIFT_SECRET_KEY не задан (python -m app.cli gen-key)")
-    if not settings.bot_token:
-        problems.append("BOT_TOKEN не задан (получите у @BotFather)")
-    if not settings.owner_id_list:
+    from app.services import secrets
+
+    if not secrets.resolve("BOT_TOKEN", settings.bot_token):
         problems.append(
-            "OWNER_IDS пуст — бот не ответит никому "
+            "токен бота не задан — получите у @BotFather и впишите "
+            "в панели (Настройки) либо в .env"
+        )
+    if not secrets.resolve("OWNER_IDS", settings.owner_ids).strip():
+        problems.append(
+            "владельцы не заданы — бот не ответит никому "
             "(узнайте свой id командой /id в боте)"
         )
     from app.adapters.telegram_gateway import gateway
@@ -349,10 +354,21 @@ def cmd_doctor() -> int:
         print(f"⚠ {item}")
     for item in problems:
         print(f"✗ {item}")
+
     if not problems:
         print("\n✓ Критичных проблем нет.")
         return 0
-    print(f"\nПроблем: {len(problems)}")
+
+    print(f"\nПроблем: {len(problems)}\n")
+    # Веб-панели ключи Telegram не нужны — её можно поднять сразу
+    # и заполнить всё остальное через браузер.
+    if settings.web_password:
+        print("Панель запускается без ключей Telegram — заполните их в ней:")
+        print("    systemctl enable --now gift-web")
+        host = settings.public_url or "http://<ip-сервера>:8081"
+        print(f"    {host}/settings")
+    else:
+        print("Задайте WEB_PASSWORD в .env, чтобы заполнить ключи через панель.")
     return 1
 
 

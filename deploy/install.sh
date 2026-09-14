@@ -75,6 +75,10 @@ chmod 750 "$DATA_DIR"
 
 # ---------------------------------------------------------------------
 log "3/8 Код приложения"
+# Каталог принадлежит служебному пользователю, а git здесь работает
+# от root — без этой пометки git отказывается с "dubious ownership".
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+
 if [[ -d "$APP_DIR/.git" ]]; then
     git -C "$APP_DIR" fetch --all --quiet
     git -C "$APP_DIR" checkout "$BRANCH" --quiet
