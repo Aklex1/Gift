@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Кандидаты — Gift{% endblock %}
+{% block content %}
+<h1>Кандидаты</h1>
+<p class="muted">Подтверждение покупки выполняется в Telegram-боте.</p>
+<table>
+  <tr><th>Подарок</th><th>Площадка</th><th>Цена</th><th>Оценка</th><th>ROI</th><th>Риск</th><th>Данные</th></tr>
+  {% for c in items %}
+  <tr>
+    <td>{{ c.name }}</td>
+    <td>{{ c.market }}</td>
+    <td>{{ fmt(c.price) }} ★</td>
+    <td>{{ fmt(c.fair) }} ★</td>
+    <td class="{{ 'pos' if c.roi > 0 else 'neg' }}"><b>{{ '%.1f'|format(c.roi) }}%</b></td>
+    <td>{{ c.risk }}/100</td>
+    <td>{{ c.confidence }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">Активных кандидатов нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

@@ -1,0 +1,351 @@
+"""Сканер рынков: поиск возможностей заработка.
+
+Проход сканера:
+    1. Обновить курс Stars/TON (FX-снапшот с таймстемпом).
+    2. Собрать активные лоты по всем площадкам стратегий.
+    3. Сохранить историю продаж как market facts.
+    4. Оценить каждый лот: ROI после комиссий, риск, качество данных.
+    5. Сохранить прошедшие фильтр как кандидатов.
+
+Сканер ничего не покупает. Решение об исполнении принимает executor
+в соответствии с режимом SAFE/SEMI/AUTO.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+from decimal import Decimal
+
+from sqlalchemy.orm import Session
+
+from app.adapters.base import (
+    AdapterError,
+    Capability,
+    CapabilityStatus,
+    ListingDTO,
+    RateLimited,
+)
+from app.adapters.registry import get_adapter
+from app.adapters.telegram_mtproto import TelegramAdapter
+from app.db import session_scope
+from app.enums import Currency, Market
+from app.models import Candidate, utcnow
+from app.services import gifts as gifts_service
+from app.services import marketdata, strategy as strategy_service, valuation
+from app.services.marketdata import MarketSnapshot
+
+log = logging.getLogger(__name__)
+
+#: Сколько живёт кандидат, прежде чем считать цену устаревшей.
+CANDIDATE_TTL = dt.timedelta(minutes=10)
+
+
+async def refresh_fx(session: Session) -> Decimal | None:
+    """Обновить курс TON->Stars.
+
+    Курс выводится из сопоставимых цен: берём медианную цену подарков,
+    выставленных и в Stars (Telegram), и в TON (внешние площадки).
+    Пока сопоставимой пары нет, используется значение по умолчанию.
+    """
+    from app.models import Listing
+
+    ton_prices = [
+        Decimal(row.price)
+        for row in session.query(Listing)
+        .filter(Listing.is_active.is_(True), Listing.currency == Currency.TON)
+        .limit(200)
+        .all()
+        if row.price
+    ]
+    if not ton_prices:
+        return None
+
+    # Прямой рыночный курс здесь получить неоткуда — фиксируем текущее
+    # допущение снапшотом, чтобы расчёты были воспроизводимы.
+    rate = marketdata.latest_fx(session, Currency.TON, Currency.STARS)
+    if rate is None:
+        rate = marketdata.DEFAULT_STARS_PER_TON
+        marketdata.record_fx(
+            session, Currency.TON, Currency.STARS, rate, source="default"
+        )
+        log.warning(
+            "Курс TON->Stars не задан, зафиксировано значение по умолчанию %s. "
+            "Уточните его в настройках для корректного кросс-рыночного ROI.",
+            rate,
+        )
+    return rate
+
+
+async def collect_listings(
+    market: Market, *, collections: list[str], limit: int
+) -> list[ListingDTO]:
+    """Собрать активные лоты площадки по списку коллекций."""
+    adapter = get_adapter(market)
+    if not adapter.supports(Capability.SEARCH):
+        return []
+
+    out: list[ListingDTO] = []
+    targets: list[str | None] = list(collections) if collections else [None]
+    for collection in targets:
+        try:
+            rows = await adapter.search(collection=collection, limit=limit)
+            out.extend(rows)
+        except RateLimited as exc:
+            log.warning("%s: лимит запросов, пропускаю проход (%s)", market.value, exc)
+            break
+        except AdapterError as exc:
+            log.warning("%s: поиск недоступен: %s", market.value, exc)
+            break
+        except Exception as exc:  # noqa: BLE001 - один рынок не роняет скан
+            log.exception("%s: ошибка поиска: %s", market.value, exc)
+            break
+    return out
+
+
+async def collect_history(market: Market, *, collections: list[str]) -> int:
+    """Загрузить историю продаж площадки в market facts."""
+    adapter = get_adapter(market)
+    if not adapter.supports(Capability.HISTORY):
+        return 0
+
+    saved = 0
+    targets: list[str | None] = list(collections) if collections else [None]
+    for collection in targets[:5]:
+        try:
+            sales = await adapter.history(collection=collection, limit=100)
+        except (AdapterError, Exception) as exc:  # noqa: BLE001
+            log.debug("%s: история недоступна: %s", market.value, exc)
+            break
+        with session_scope() as session:
+            saved += marketdata.record_facts(session, sales, market)
+    return saved
+
+
+async def snapshot_for_listing(
+    session: Session, dto: ListingDTO
+) -> MarketSnapshot:
+    """Построить срез рынка для конкретного лота.
+
+    Для Telegram приоритет у официальной оценки
+    ``payments.getUniqueStarGiftValueInfo``: floor, средняя цена и
+    последняя продажа приходят от самой площадки.
+    """
+    if dto.market is Market.TELEGRAM and dto.external_id:
+        adapter = get_adapter(Market.TELEGRAM)
+        if isinstance(adapter, TelegramAdapter):
+            try:
+                info = await adapter.value_info(dto.external_id)
+                if info.get("floor_price") or info.get("average_price"):
+                    return marketdata.snapshot_from_telegram(
+                        info, collection=dto.gift.collection, model=dto.gift.model
+                    )
+            except Exception as exc:  # noqa: BLE001 - откатываемся на свою выборку
+                log.debug("value_info для %s недоступен: %s", dto.external_id, exc)
+
+    return marketdata.snapshot_for(
+        session, collection=dto.gift.collection, model=dto.gift.model
+    )
+
+
+async def scan_once() -> dict:
+    """Один полный проход сканера.
+
+    Returns:
+        Сводка: сколько лотов просмотрено и сколько кандидатов создано.
+    """
+    report = {"listings": 0, "facts": 0, "candidates": 0, "markets": {}}
+
+    with session_scope() as session:
+        strategies = strategy_service.active_strategies(session)
+        if not strategies:
+            log.info("Нет включённых стратегий — сканирование пропущено")
+            return report
+        # Материализуем нужные поля: сессия закроется до асинхронных вызовов.
+        plan = [
+            {
+                "id": s.id,
+                "name": s.name,
+                "markets": [str(m).lower() for m in (s.markets or [])],
+                "collections": list(s.collections or []),
+            }
+            for s in strategies
+        ]
+
+    wanted_markets: dict[Market, set[str]] = {}
+    for item in plan:
+        for market_name in item["markets"] or [Market.TELEGRAM.value]:
+            try:
+                market = Market(market_name)
+            except ValueError:
+                continue
+            wanted_markets.setdefault(market, set()).update(item["collections"])
+
+    # --- сбор данных ---
+    all_listings: list[ListingDTO] = []
+    for market, collections in wanted_markets.items():
+        rows = await collect_listings(
+            market, collections=sorted(collections), limit=200
+        )
+        report["markets"][market.value] = len(rows)
+        all_listings.extend(rows)
+
+        facts = await collect_history(market, collections=sorted(collections))
+        report["facts"] += facts
+
+    report["listings"] = len(all_listings)
+    if not all_listings:
+        return report
+
+    # --- сохранение лотов ---
+    with session_scope() as session:
+        await refresh_fx(session)
+        for dto in all_listings:
+            gifts_service.upsert_listing(session, dto)
+        seen: dict[Market, set[str]] = {}
+        for dto in all_listings:
+            seen.setdefault(dto.market, set()).add(dto.external_id)
+        for market, ids in seen.items():
+            gifts_service.deactivate_missing(session, market, ids)
+
+    # --- оценка ---
+    created = 0
+    for dto in all_listings:
+        try:
+            created += await evaluate_listing(dto, plan)
+        except Exception as exc:  # noqa: BLE001 - один лот не роняет скан
+            log.exception("Ошибка оценки лота %s: %s", dto.external_id, exc)
+
+    report["candidates"] = created
+    log.info(
+        "Скан завершён: лотов %s, фактов %s, кандидатов %s",
+        report["listings"],
+        report["facts"],
+        created,
+    )
+    return report
+
+
+async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
+    """Оценить лот по всем подходящим стратегиям.
+
+    Returns:
+        Сколько кандидатов создано.
+    """
+    from app.models import Strategy
+
+    created = 0
+    with session_scope() as session:
+        price_stars = marketdata.to_stars(session, dto.price, dto.currency)
+        if price_stars is None or price_stars <= 0:
+            return 0
+
+        snapshot = await snapshot_for_listing(session, dto)
+        adapter = get_adapter(dto.market)
+        is_official = (
+            adapter.status_of(Capability.BUY) is CapabilityStatus.SUPPORTED
+        )
+
+        for item in plan:
+            strategy = session.get(Strategy, item["id"])
+            if strategy is None or not strategy.is_enabled:
+                continue
+
+            ok, reason = strategy_service.matches_filters(strategy, dto)
+            if not ok:
+                continue
+            ok, reason = strategy_service.price_in_range(strategy, price_stars)
+            if not ok:
+                continue
+            ok, reason = strategy_service.can_open_position(session, strategy)
+            if not ok:
+                log.debug("Стратегия %s: %s", strategy.name, reason)
+                continue
+
+            required = strategy_service.required_confidence(strategy)
+            if not marketdata.confidence_at_least(snapshot.confidence, required):
+                continue
+
+            result = valuation.evaluate(
+                session,
+                buy_market=dto.market,
+                buy_price=price_stars,
+                # Продаём там же, где купили: кросс-рыночная сделка
+                # не атомарна и требует отдельного подтверждения.
+                sell_market=dto.market,
+                snapshot=snapshot,
+                is_official_api=is_official,
+                target_markup=Decimal(strategy.sell_markup or 0),
+            )
+
+            if result.blockers:
+                continue
+            if result.net_roi < Decimal(strategy.min_roi):
+                continue
+            if result.risk_score > strategy.max_risk:
+                continue
+
+            gift = gifts_service.upsert_gift(session, dto.gift)
+            exists = (
+                session.query(Candidate)
+                .filter_by(
+                    strategy_id=strategy.id,
+                    market=dto.market,
+                    listing_external_id=dto.external_id,
+                    state="pending",
+                )
+                .first()
+            )
+            if exists is not None:
+                # Обновляем цену и оценку вместо создания дубликата.
+                exists.price_stars = price_stars
+                exists.fair_value_stars = result.fair_value
+                exists.net_roi = result.net_roi
+                exists.risk_score = result.risk_score
+                exists.confidence = result.confidence
+                exists.rationale = {
+                    **result.as_dict(),
+                    "market": snapshot.as_dict(),
+                }
+                exists.expires_at = utcnow() + CANDIDATE_TTL
+                continue
+
+            session.add(
+                Candidate(
+                    strategy_id=strategy.id,
+                    gift_id=gift.id,
+                    market=dto.market,
+                    listing_external_id=dto.external_id,
+                    price_stars=price_stars,
+                    fair_value_stars=result.fair_value,
+                    net_roi=result.net_roi,
+                    risk_score=result.risk_score,
+                    confidence=result.confidence,
+                    rationale={**result.as_dict(), "market": snapshot.as_dict()},
+                    state="pending",
+                    expires_at=utcnow() + CANDIDATE_TTL,
+                )
+            )
+            created += 1
+            log.info(
+                "Кандидат: %s на %s за %s Stars, ROI %.1f%%, риск %s",
+                gifts_service.describe(gift),
+                dto.market.value,
+                price_stars,
+                float(result.net_roi) * 100,
+                result.risk_score,
+            )
+    return created
+
+
+def expire_candidates(session: Session) -> int:
+    """Пометить протухших кандидатов: их цена больше не актуальна."""
+    now = utcnow()
+    rows = (
+        session.query(Candidate)
+        .filter(Candidate.state == "pending", Candidate.expires_at < now)
+        .all()
+    )
+    for row in rows:
+        row.state = "expired"
+    return len(rows)

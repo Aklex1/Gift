@@ -1,0 +1,282 @@
+"""Веб-панель: дашборд, портфель, кандидаты, статус площадок.
+
+Доступ закрыт HTTP Basic-аутентификацией. Панель предназначена для
+наблюдения и базового управления; торговые подтверждения остаются
+в Telegram-боте.
+"""
+
+from __future__ import annotations
+
+import logging
+import secrets
+from decimal import Decimal
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from app.adapters.registry import capability_matrix, probe_all
+from app.config import settings
+from app.db import session_scope
+from app.enums import Market, TradeMode
+from app.logging_conf import setup_logging
+from app.models import AuditLog, Budget, Candidate, Gift, Intent, Position, Strategy, utcnow
+from app.services import budget as budget_service
+from app.services import gifts as gifts_service
+from app.services import portfolio
+
+log = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+security = HTTPBasic()
+
+app = FastAPI(title="Gift — панель управления", docs_url=None, redoc_url=None)
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+    """HTTP Basic с защитой от тайминг-атак."""
+    if not settings.web_password:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WEB_PASSWORD не задан — панель отключена",
+        )
+    user_ok = secrets.compare_digest(credentials.username, settings.web_user)
+    pass_ok = secrets.compare_digest(credentials.password, settings.web_password)
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверные учётные данные",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    """Инициализация логов при старте."""
+    setup_logging("web")
+    log.info("Веб-панель запущена на %s:%s", settings.web_host, settings.web_port)
+
+
+@app.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Проверка живости для мониторинга."""
+    return JSONResponse({"status": "ok"})
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    """Главный дашборд."""
+    with session_scope() as session:
+        summary = portfolio.pnl_summary(session)
+        budgets = [
+            budget_service.snapshot(session, b.id) for b in session.query(Budget).all()
+        ]
+        strategies = session.query(Strategy).order_by(Strategy.priority.desc()).all()
+        strategy_rows = [
+            {
+                "id": s.id,
+                "name": s.name,
+                "enabled": s.is_enabled,
+                "mode": s.mode.value,
+                "markets": ", ".join(s.markets or []),
+                "min_roi": float(s.min_roi or 0) * 100,
+                "max_risk": s.max_risk,
+            }
+            for s in strategies
+        ]
+        pending = (
+            session.query(Candidate)
+            .filter(Candidate.state == "pending", Candidate.expires_at > utcnow())
+            .count()
+        )
+        unknown = (
+            session.query(Intent).filter(Intent.status == "unknown").count()
+        )
+
+    mode = settings.default_mode
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={
+            "summary": summary,
+            "budgets": budgets,
+            "strategies": strategy_rows,
+            "pending": pending,
+            "unknown": unknown,
+            "mode": mode.value,
+            "kill_switch": settings.kill_switch,
+            "fmt": gifts_service.format_stars,
+        },
+    )
+
+
+@app.get("/candidates", response_class=HTMLResponse)
+async def candidates_page(
+    request: Request, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Список активных кандидатов."""
+    with session_scope() as session:
+        rows = (
+            session.query(Candidate)
+            .filter(Candidate.state == "pending", Candidate.expires_at > utcnow())
+            .order_by(Candidate.net_roi.desc())
+            .limit(50)
+            .all()
+        )
+        items = []
+        for row in rows:
+            gift = session.get(Gift, row.gift_id)
+            items.append(
+                {
+                    "id": row.id,
+                    "name": gifts_service.describe(gift) if gift else "?",
+                    "market": str(row.market),
+                    "price": Decimal(row.price_stars),
+                    "fair": Decimal(row.fair_value_stars),
+                    "roi": float(row.net_roi) * 100,
+                    "risk": row.risk_score,
+                    "confidence": str(row.confidence),
+                    "rationale": row.rationale or {},
+                }
+            )
+    return templates.TemplateResponse(
+        request=request,
+        name="candidates.html",
+        context={"items": items, "fmt": gifts_service.format_stars},
+    )
+
+
+@app.get("/portfolio", response_class=HTMLResponse)
+async def portfolio_page(
+    request: Request, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Портфель: открытые и закрытые позиции."""
+    with session_scope() as session:
+        opened = portfolio.open_positions(session)
+        open_rows = []
+        for position in opened:
+            gift = session.get(Gift, position.gift_id)
+            open_rows.append(
+                {
+                    "id": position.id,
+                    "name": gifts_service.describe(gift) if gift else "?",
+                    "status": str(position.status),
+                    "buy_price": Decimal(position.buy_price),
+                    "list_price": (
+                        Decimal(position.list_price) if position.list_price else None
+                    ),
+                    "bought_at": position.bought_at,
+                }
+            )
+        closed = (
+            session.query(Position)
+            .filter(Position.status == "sold")
+            .order_by(Position.sold_at.desc())
+            .limit(50)
+            .all()
+        )
+        closed_rows = []
+        for position in closed:
+            gift = session.get(Gift, position.gift_id)
+            closed_rows.append(
+                {
+                    "id": position.id,
+                    "name": gifts_service.describe(gift) if gift else "?",
+                    "buy_price": Decimal(position.buy_price),
+                    "sold_price": Decimal(position.sold_price or 0),
+                    "pnl": position.realized_pnl or Decimal(0),
+                    "sold_at": position.sold_at,
+                }
+            )
+    return templates.TemplateResponse(
+        request=request,
+        name="portfolio.html",
+        context={
+            "open_rows": open_rows,
+            "closed_rows": closed_rows,
+            "fmt": gifts_service.format_stars,
+        },
+    )
+
+
+@app.get("/markets", response_class=HTMLResponse)
+async def markets_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    """Матрица возможностей площадок."""
+    from app.adapters.base import Capability
+
+    return templates.TemplateResponse(
+        request=request,
+        name="markets.html",
+        context={
+            "matrix": capability_matrix(),
+            "capabilities": [c.value for c in Capability],
+        },
+    )
+
+
+@app.post("/markets/probe")
+async def markets_probe(_: str = Depends(require_auth)) -> JSONResponse:
+    """Живая проверка доступности площадок (только чтение)."""
+    report = await probe_all()
+    return JSONResponse(report)
+
+
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
+    """Журнал аудита."""
+    with session_scope() as session:
+        rows = (
+            session.query(AuditLog).order_by(AuditLog.at.desc()).limit(200).all()
+        )
+        items = [
+            {
+                "at": row.at,
+                "actor": row.actor,
+                "action": row.action,
+                "target": row.target,
+                "ok": row.ok,
+                "payload": row.payload,
+            }
+            for row in rows
+        ]
+    return templates.TemplateResponse(
+        request=request, name="audit.html", context={"items": items}
+    )
+
+
+@app.post("/kill")
+async def toggle_kill(_: str = Depends(require_auth)) -> RedirectResponse:
+    """Переключить аварийный стоп."""
+    settings.kill_switch = not settings.kill_switch
+    with session_scope() as session:
+        session.add(
+            AuditLog(
+                actor="web",
+                action="kill_switch",
+                payload={"enabled": settings.kill_switch},
+            )
+        )
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/api/summary")
+async def api_summary(_: str = Depends(require_auth)) -> JSONResponse:
+    """Машинная сводка состояния."""
+    with session_scope() as session:
+        summary = portfolio.pnl_summary(session)
+        return JSONResponse(
+            {
+                "closed_count": summary["closed_count"],
+                "open_count": summary["open_count"],
+                "realized_pnl": str(summary["realized_pnl"]),
+                "roi": str(summary["roi"]),
+                "kill_switch": settings.kill_switch,
+                "mode": settings.default_mode.value,
+            }
+        )

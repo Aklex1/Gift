@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Портфель — Gift{% endblock %}
+{% block content %}
+<h1>Портфель</h1>
+
+<h2>Открытые позиции</h2>
+<table>
+  <tr><th>#</th><th>Подарок</th><th>Статус</th><th>Покупка</th><th>В продаже</th><th>Куплено</th></tr>
+  {% for p in open_rows %}
+  <tr>
+    <td>{{ p.id }}</td>
+    <td>{{ p.name }}</td>
+    <td>{{ p.status }}</td>
+    <td>{{ fmt(p.buy_price) }} ★</td>
+    <td>{{ fmt(p.list_price) if p.list_price else '—' }}</td>
+    <td>{{ p.bought_at.strftime('%d.%m.%Y %H:%M') }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">Открытых позиций нет</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Закрытые сделки</h2>
+<table>
+  <tr><th>#</th><th>Подарок</th><th>Покупка</th><th>Продажа</th><th>PnL</th><th>Дата</th></tr>
+  {% for p in closed_rows %}
+  <tr>
+    <td>{{ p.id }}</td>
+    <td>{{ p.name }}</td>
+    <td>{{ fmt(p.buy_price) }} ★</td>
+    <td>{{ fmt(p.sold_price) }} ★</td>
+    <td class="{{ 'pos' if p.pnl > 0 else 'neg' }}"><b>{{ fmt(p.pnl) }} ★</b></td>
+    <td>{{ p.sold_at.strftime('%d.%m.%Y') if p.sold_at else '—' }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">Закрытых сделок нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

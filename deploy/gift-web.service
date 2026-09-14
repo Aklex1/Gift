@@ -1,0 +1,30 @@
+[Unit]
+Description=Gift — веб-панель
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gift
+Group=gift
+WorkingDirectory=/opt/gift
+EnvironmentFile=/opt/gift/.env
+ExecStart=/opt/gift/.venv/bin/python -m uvicorn app.web.server:app --host 127.0.0.1 --port 8080 --proxy-headers
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gift
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gift-web
+
+[Install]
+WantedBy=multi-user.target

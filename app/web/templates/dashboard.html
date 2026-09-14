@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Дашборд — Gift{% endblock %}
+{% block content %}
+<h1>Дашборд</h1>
+
+<div class="banner {{ 'danger' if kill_switch else 'ok' }}">
+  <div>
+    Режим: <b>{{ mode|upper }}</b> ·
+    Аварийный стоп: <b>{{ 'ВКЛЮЧЁН' if kill_switch else 'выключен' }}</b>
+  </div>
+  <form method="post" action="/kill">
+    <button type="submit">{{ 'Снять стоп' if kill_switch else 'Аварийный стоп' }}</button>
+  </form>
+</div>
+
+<div class="cards">
+  <div class="card">
+    <span class="label">Реализованный PnL</span>
+    <span class="value {{ 'pos' if summary.realized_pnl > 0 else ('neg' if summary.realized_pnl < 0 else '') }}">
+      {{ fmt(summary.realized_pnl) }} ★
+    </span>
+  </div>
+  <div class="card">
+    <span class="label">ROI по закрытым</span>
+    <span class="value">{{ '%.1f'|format(summary.roi|float * 100) }}%</span>
+  </div>
+  <div class="card">
+    <span class="label">Открытых позиций</span>
+    <span class="value">{{ summary.open_count }}</span>
+  </div>
+  <div class="card">
+    <span class="label">Закрытых сделок</span>
+    <span class="value">{{ summary.closed_count }}</span>
+  </div>
+  <div class="card">
+    <span class="label">Заморожено</span>
+    <span class="value">{{ fmt(summary.locked_cost) }} ★</span>
+  </div>
+  <div class="card">
+    <span class="label">Кандидатов сейчас</span>
+    <span class="value">{{ pending }}</span>
+  </div>
+  {% if unknown %}
+  <div class="card warn">
+    <span class="label">Неизвестных исходов</span>
+    <span class="value">{{ unknown }}</span>
+  </div>
+  {% endif %}
+</div>
+
+<h2>Бюджеты</h2>
+<table>
+  <tr><th>Бюджет</th><th>Потолок</th><th>В резерве</th><th>Потрачено</th><th>Свободно</th><th>Суточный остаток</th></tr>
+  {% for b in budgets %}
+  <tr>
+    <td>{{ b.name }}</td>
+    <td>{{ fmt(b.hard_cap) }} ★</td>
+    <td>{{ fmt(b.reserved) }} ★</td>
+    <td>{{ fmt(b.spent) }} ★</td>
+    <td><b>{{ fmt(b.available) }} ★</b></td>
+    <td>{{ fmt(b.daily_available) }} ★</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">Бюджетов нет</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Стратегии</h2>
+<table>
+  <tr><th>Имя</th><th>Состояние</th><th>Режим</th><th>Площадки</th><th>Мин. ROI</th><th>Макс. риск</th></tr>
+  {% for s in strategies %}
+  <tr>
+    <td>{{ s.name }}</td>
+    <td>{{ '▶️ включена' if s.enabled else '⏸ выключена' }}</td>
+    <td><span class="tag {{ s.mode }}">{{ s.mode|upper }}</span></td>
+    <td>{{ s.markets or '—' }}</td>
+    <td>{{ '%.0f'|format(s.min_roi) }}%</td>
+    <td>{{ s.max_risk }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">Стратегий нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

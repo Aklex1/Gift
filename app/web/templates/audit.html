@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Аудит — Gift{% endblock %}
+{% block content %}
+<h1>Журнал аудита</h1>
+<table>
+  <tr><th>Время</th><th>Кто</th><th>Действие</th><th>Объект</th><th>Итог</th></tr>
+  {% for a in items %}
+  <tr>
+    <td>{{ a.at.strftime('%d.%m %H:%M:%S') }}</td>
+    <td>{{ a.actor }}</td>
+    <td>{{ a.action }}</td>
+    <td>{{ a.target or '—' }}</td>
+    <td>{{ '✅' if a.ok else '❌' }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">Записей нет</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

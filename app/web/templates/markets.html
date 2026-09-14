@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Площадки — Gift{% endblock %}
+{% block content %}
+<h1>Возможности площадок</h1>
+<p class="muted">
+  🟢 официальный API — разрешён автономный режим ·
+  🟡 приватный API без SLA — только чтение и ручное подтверждение ·
+  ⚪️ недоступно
+</p>
+<table class="matrix">
+  <tr>
+    <th>Площадка</th>
+    {% for c in capabilities %}<th>{{ c }}</th>{% endfor %}
+  </tr>
+  {% for market, caps in matrix.items() %}
+  <tr>
+    <td><b>{{ market }}</b></td>
+    {% for c in capabilities %}
+      {% set st = caps.get(c, 'unavailable') %}
+      <td class="cap {{ st }}">
+        {% if st == 'supported' %}🟢{% elif st == 'experimental' %}🟡{% else %}⚪️{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+</table>
+<form method="post" action="/markets/probe" onsubmit="probe(event)">
+  <button type="submit">Проверить доступность (только чтение)</button>
+</form>
+<pre id="probe-result"></pre>
+<script>
+async function probe(e){
+  e.preventDefault();
+  const out = document.getElementById('probe-result');
+  out.textContent = 'Проверяю…';
+  const r = await fetch('/markets/probe', {method:'POST'});
+  out.textContent = JSON.stringify(await r.json(), null, 2);
+}
+</script>
+{% endblock %}

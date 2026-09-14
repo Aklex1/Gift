@@ -1,0 +1,30 @@
+[Unit]
+Description=Gift — фоновые воркеры (скан, репрайс, сверка)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gift
+Group=gift
+WorkingDirectory=/opt/gift
+EnvironmentFile=/opt/gift/.env
+ExecStart=/opt/gift/.venv/bin/python -m app.workers.runner
+Restart=always
+RestartSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gift
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gift-worker
+
+[Install]
+WantedBy=multi-user.target
