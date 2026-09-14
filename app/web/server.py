@@ -227,11 +227,10 @@ async def markets_probe(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(report)
 
 
-@app.get("/settings", response_class=HTMLResponse)
-async def settings_page(
-    request: Request, saved: int = 0, _: str = Depends(require_auth)
+def _render_settings(
+    request: Request, *, saved: int = 0, errors: dict[str, str] | None = None
 ) -> HTMLResponse:
-    """Форма ввода ключей и токенов."""
+    """Собрать страницу настроек."""
     from app.services import secrets
 
     state = secrets.masked_state()
@@ -248,41 +247,63 @@ async def settings_page(
         context={
             "groups": groups,
             "saved": saved,
+            "errors": errors or {},
             "session_ok": session_ok,
             "session_path": str(settings.session_path),
         },
     )
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(
+    request: Request, saved: int = 0, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Форма ввода ключей и токенов."""
+    return _render_settings(request, saved=saved)
+
+
 @app.post("/settings")
-async def settings_save(
-    request: Request, _: str = Depends(require_auth)
-) -> RedirectResponse:
+async def settings_save(request: Request, _: str = Depends(require_auth)):
     """Сохранить изменённые поля.
 
     Пустое поле означает «не менять»: иначе маскированное значение
     затирало бы сохранённый секрет. Для очистки есть отдельный флажок.
+
+    Значения с явно неверным форматом не сохраняются: молча принятая
+    опечатка в адресе кошелька или токене обнаружилась бы только
+    в момент сделки.
     """
-    from app.services import secrets
     from app.adapters.registry import _ADAPTERS
+    from app.services import secrets
 
     form = await request.form()
-    changed = 0
+    pending: list[tuple[str, str]] = []
+    errors: dict[str, str] = {}
+
     for field in secrets.FIELDS:
         if form.get(f"clear__{field.key}"):
-            secrets.set_value(field.key, "", actor="web")
-            changed += 1
+            pending.append((field.key, ""))
             continue
         value = str(form.get(field.key, "") or "").strip()
         if not value:
             continue
-        secrets.set_value(field.key, value, actor="web")
-        changed += 1
+        error = secrets.validate(field.key, value)
+        if error:
+            errors[field.key] = error
+            continue
+        pending.append((field.key, value))
 
-    if changed:
+    if errors:
+        # Ничего не сохраняем: пусть владелец увидит все ошибки разом.
+        return _render_settings(request, errors=errors)
+
+    for key, value in pending:
+        secrets.set_value(key, value, actor="web")
+
+    if pending:
         # Адаптеры создаются с токенами в конструкторе — пересоздаём.
         _ADAPTERS.clear()
-    return RedirectResponse(f"/settings?saved={changed}", status_code=303)
+    return RedirectResponse(f"/settings?saved={len(pending)}", status_code=303)
 
 
 @app.post("/settings/test")

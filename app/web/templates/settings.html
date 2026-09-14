@@ -3,6 +3,13 @@
 {% block content %}
 <h1>Настройки</h1>
 
+{% if errors %}
+<div class="banner danger">
+  <div>Ничего не сохранено: исправьте ошибки в выделенных полях
+    (<b>{{ errors|length }}</b>).</div>
+</div>
+{% endif %}
+
 {% if saved %}
 <div class="banner ok">
   <div>Сохранено полей: <b>{{ saved }}</b>. Ключи площадок применяются сразу.
@@ -45,8 +52,12 @@
                id="f-{{ item.field.key }}"
                name="{{ item.field.key }}"
                autocomplete="off"
+               class="{{ 'invalid' if errors.get(item.field.key) }}"
                placeholder="{{ item.field.placeholder or ('оставьте пустым — не менять' if item.is_set else '') }}"
                {% if not item.field.secret and item.is_set %}value="{{ item.display }}"{% endif %}>
+        {% if errors.get(item.field.key) %}
+        <div class="err">{{ errors[item.field.key] }}</div>
+        {% endif %}
         {% if item.is_set %}
         <label class="clear">
           <input type="checkbox" name="clear__{{ item.field.key }}" value="1">

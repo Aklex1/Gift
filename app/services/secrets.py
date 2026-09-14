@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -41,6 +42,53 @@ class SecretField:
     #: Группа для вёрстки страницы настроек.
     group: str = "Прочее"
     placeholder: str = ""
+    #: Имя проверки формата: опечатка не должна сохраняться молча.
+    check: str = ""
+
+
+#: Адрес кошелька TON: дружественная форма (48 символов base64url,
+#: начинается с UQ/EQ/kQ/0Q) либо сырая форма "0:<64 hex>".
+_TON_FRIENDLY = re.compile(r"^[UEk0]Q[A-Za-z0-9_-]{46}$")
+_TON_RAW = re.compile(r"^-?\d:[0-9a-fA-F]{64}$")
+
+
+def validate(key: str, value: str) -> str:
+    """Проверить формат значения.
+
+    Returns:
+        Текст ошибки, либо пустая строка если всё в порядке.
+    """
+    field = FIELD_BY_KEY.get(key)
+    if field is None or not value:
+        return ""
+
+    if field.check == "ton_address":
+        cleaned = value.strip()
+        if _TON_FRIENDLY.match(cleaned) or _TON_RAW.match(cleaned):
+            return ""
+        return (
+            "не похоже на адрес TON. Ожидается 48 символов, начинается "
+            "с UQ или EQ (например UQAbc…), либо сырая форма 0:<64 hex>"
+        )
+
+    if field.check == "bot_token":
+        if re.match(r"^\d{6,}:[A-Za-z0-9_-]{30,}$", value.strip()):
+            return ""
+        return "токен @BotFather выглядит как 7123456789:AAF… — проверьте, что скопирован целиком"
+
+    if field.check == "int":
+        if value.strip().isdigit():
+            return ""
+        return "ожидается число"
+
+    if field.check == "id_list":
+        for chunk in value.replace(";", ",").split(","):
+            chunk = chunk.strip()
+            if chunk and not chunk.lstrip("-").isdigit():
+                return f"«{chunk}» не является числовым Telegram id"
+        return ""
+
+    return ""
 
 
 #: Всё, что можно задать из панели.
@@ -52,6 +100,7 @@ FIELDS: tuple[SecretField, ...] = (
         hint="У @BotFather → /newbot. После смены перезапустите сервис бота.",
         group="Telegram — бот управления",
         placeholder="7123456789:AAF...",
+        check="bot_token",
     ),
     SecretField(
         key="OWNER_IDS",
@@ -61,6 +110,7 @@ FIELDS: tuple[SecretField, ...] = (
         secret=False,
         group="Telegram — бот управления",
         placeholder="123456789",
+        check="id_list",
     ),
     # --- Telegram: торговый аккаунт ---
     SecretField(
@@ -70,6 +120,7 @@ FIELDS: tuple[SecretField, ...] = (
         secret=False,
         group="Telegram — торговый аккаунт",
         placeholder="21724531",
+        check="int",
     ),
     SecretField(
         key="TG_API_HASH",
@@ -133,12 +184,15 @@ FIELDS: tuple[SecretField, ...] = (
     ),
     SecretField(
         key="TON_WALLET_ADDRESS",
-        title="Адрес кошелька",
-        hint="Для наблюдения за балансом. Приватный ключ не нужен и "
-             "не хранится.",
+        title="Адрес кошелька TON",
+        hint="Только для наблюдения за балансом: бот не тратит TON и не "
+             "хранит приватный ключ. Скопируйте адрес из @wallet или "
+             "Tonkeeper. Для торговли подарками в Telegram нужны Stars, "
+             "а не TON — это поле можно оставить пустым.",
         secret=False,
         group="TON (только чтение)",
-        placeholder="UQ...",
+        placeholder="UQAbc...",
+        check="ton_address",
     ),
 )
 

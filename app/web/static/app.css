@@ -110,3 +110,5 @@ button.secondary { background: #2a2f3a; color: var(--text); }
   }
   table.settings .skey { padding-bottom: 4px; }
 }
+table.settings input.invalid { border-color: var(--neg); }
+table.settings .err { color: var(--neg); font-size: 12.5px; margin-top: 5px; }

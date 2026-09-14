@@ -150,3 +150,31 @@ def test_masked_state_survives_unreadable_secret(session):
 
     state = secrets.masked_state()
     assert state["MRKT_AUTH"]["is_set"] is False
+
+
+def test_ton_address_validation():
+    """Адрес TON проверяется по формату, а не принимается вслепую."""
+    ok = "UQAvDfWFG0oboAHFFnJ3s1nCKLJpgrLDyPcbBXHkDmfBrsom"
+    raw = "0:" + "a" * 64
+    assert secrets.validate("TON_WALLET_ADDRESS", ok) == ""
+    assert secrets.validate("TON_WALLET_ADDRESS", raw) == ""
+    # Биткоин-адрес и произвольный текст отклоняются.
+    assert secrets.validate("TON_WALLET_ADDRESS", "1BvBMSEYstWetqTFn5Au4m4GFg7x")
+    assert secrets.validate("TON_WALLET_ADDRESS", "мой кошелек")
+
+
+def test_bot_token_validation():
+    """Обрезанный токен бота не проходит."""
+    assert secrets.validate("BOT_TOKEN", "7123456789:AAF" + "x" * 30) == ""
+    assert secrets.validate("BOT_TOKEN", "7123456789")
+
+
+def test_owner_ids_validation():
+    """Нечисловой id в списке владельцев отлавливается."""
+    assert secrets.validate("OWNER_IDS", "123, 456") == ""
+    assert "вася" in secrets.validate("OWNER_IDS", "123, вася")
+
+
+def test_empty_value_skips_validation():
+    """Пустое поле не считается ошибкой — оно значит «не менять»."""
+    assert secrets.validate("TON_WALLET_ADDRESS", "") == ""
