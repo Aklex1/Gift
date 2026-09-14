@@ -202,30 +202,37 @@ async def _contract(market_name: str, make_template: bool) -> int:
     if not write_on:
         problems += 1
 
-    # 2. Контракт
+    # 2. Контракт.
+    # Берём его у самого адаптера: там уже слиты встроенные пути
+    # площадки и переопределения из файла — ровно то, чем адаптер
+    # будет пользоваться при сделке.
+    adapter = get_adapter(market)
+    contract = getattr(adapter, "contract", None)
+    described = contract.described if contract else []
     path = contract_path(market.value)
-    contract = load(market.value)
-    if not path.exists():
-        print(f"✗ Контракт не создан: {path}")
-        print(f"  Создайте заготовку: gift-cli contract {market.value} --template")
-        problems += 1
-    elif is_placeholder(market.value):
+
+    if path.exists() and is_placeholder(market.value):
         print(f"✗ Контракт не заполнен (остались заглушки ЗАПОЛНИТЕ): {path}")
         problems += 1
-    else:
-        described = contract.described
-        print(f"✓ Контракт: {path}")
+    elif described:
+        source = f"файл {path}" if path.exists() else "встроенные эндпоинты площадки"
+        print(f"✓ Контракт: {source}")
         for op in WRITE_OPS:
             mark = "✓" if op in described else "·"
-            endpoint = contract.get(op)
+            endpoint = contract.get(op) if contract else None
             detail = f"{endpoint.method} {endpoint.path}" if endpoint else "не описана"
             print(f"    {mark} {op}: {detail}")
         if "buy" not in described:
             print("  ! без операции buy автоматическая покупка невозможна")
             problems += 1
+        if not path.exists():
+            print(f"    переопределить: gift-cli contract {market.value} --template")
+    else:
+        print(f"✗ Боевые эндпоинты неизвестны: {path} не создан")
+        print(f"  Создайте заготовку: gift-cli contract {market.value} --template")
+        problems += 1
 
     # 3. Живая проверка чтения
-    adapter = get_adapter(market)
     print()
     try:
         rows = await adapter.search(limit=3)

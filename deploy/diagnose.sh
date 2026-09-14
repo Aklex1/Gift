@@ -77,11 +77,38 @@ if [[ -n "$NGINX_PORT" ]]; then
     esac
 fi
 
+hdr "Сеть до площадок"
+for host in api.telegram.org portals-market.com api.tgmrkt.io tonapi.io; do
+    if getent hosts "$host" >/dev/null 2>&1; then
+        code="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "https://$host" 2>/dev/null)"
+        if [[ -n "$code" && "$code" != "000" ]]; then
+            ok "$host — резолвится, HTTPS отвечает ($code)"
+        else
+            bad "$host — резолвится, но HTTPS не отвечает"
+        fi
+    else
+        bad "$host — DNS не резолвит"
+    fi
+done
+if ! getent hosts portals-market.com >/dev/null 2>&1; then
+    inf ""
+    inf "DNS не работает. Проверьте:"
+    inf "    cat /etc/resolv.conf"
+    inf "    resolvectl status 2>/dev/null | head -20"
+    inf "Быстрая проверка с публичным DNS:"
+    inf "    getent hosts portals-market.com || nslookup portals-market.com 8.8.8.8"
+fi
+
 hdr "Конфигурация"
 [[ -f "$APP_DIR/.env" ]] && ok ".env на месте" || bad ".env отсутствует: $APP_DIR/.env"
 if [[ -f "$APP_DIR/.env" ]]; then
     grep -q '^GIFT_SECRET_KEY=.\+' "$APP_DIR/.env" && ok "GIFT_SECRET_KEY задан" || bad "GIFT_SECRET_KEY пуст"
     grep -q '^WEB_PASSWORD=.\+'    "$APP_DIR/.env" && ok "WEB_PASSWORD задан"    || bad "WEB_PASSWORD пуст — панель отключена"
+    dups="$(grep -oE '^[A-Z_]+=' "$APP_DIR/.env" | sort | uniq -d | tr -d '=' | tr '\n' ' ')"
+    if [[ -n "$dups" ]]; then
+        bad "настройки заданы дважды: $dups"
+        inf "работает последнее значение; лишние строки лучше убрать"
+    fi
 fi
 [[ -f "$DATA_DIR/.webpass" ]] && inf "пароль панели: $(cat "$DATA_DIR/.webpass")"
 
