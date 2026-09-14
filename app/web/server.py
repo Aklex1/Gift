@@ -123,7 +123,7 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
             session.query(Intent).filter(Intent.status == "unknown").count()
         )
 
-    from app.services import runtime
+    from app.services import balances, runtime
 
     return templates.TemplateResponse(
         request=request,
@@ -137,6 +137,7 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
             "mode": runtime.mode().value,
             "kill_switch": runtime.kill_switch(),
             "accounts": account_rows,
+            "markets": balances.snapshot(),
             "total_stars": total_stars,
             "total_ton": total_ton,
             "fmt": gifts_service.format_stars,
@@ -632,7 +633,10 @@ async def accounts_refresh(_: str = Depends(require_auth)) -> RedirectResponse:
     """Опросить балансы всех аккаунтов."""
     from app.services import accounts as accounts_service
 
+    from app.services import balances
+
     report = await accounts_service.refresh_balances()
+    await balances.refresh()
     return RedirectResponse(
         f"/accounts?saved=Опрошено {report['checked']}, "
         f"успешно {report['ok']}, с ошибкой {report['failed']}",

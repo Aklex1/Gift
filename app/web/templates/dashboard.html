@@ -56,6 +56,29 @@
   {% endif %}
 </div>
 
+{% if markets %}
+<h2>Кошельки площадок</h2>
+<table>
+  <tr><th>Площадка</th><th>Баланс</th><th>Боевой режим</th><th>Обновлено</th></tr>
+  {% for m in markets %}
+  <tr>
+    <td>{{ m.title }}</td>
+    <td>
+      {% if m.amount is not none %}
+        <b>{{ amount(m.amount) }}</b> {{ m.currency }}
+      {% elif m.error %}
+        <span class="neg">{{ m.error }}</span>
+      {% else %}
+        <span class="muted">не опрашивался</span>
+      {% endif %}
+    </td>
+    <td>{{ 'включён' if m.enabled else 'выключен' }}</td>
+    <td class="muted">{{ m.at or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 <h2>Аккаунты</h2>
 <table>
   <tr><th>Аккаунт</th><th>Stars</th><th>TON</th><th>Состояние</th><th>Обновлено</th></tr>

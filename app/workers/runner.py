@@ -70,6 +70,19 @@ async def task_inventory() -> None:
     await _guarded("inventory", run)
 
 
+async def task_balances() -> None:
+    """Обновить балансы аккаунтов и кошельков площадок."""
+
+    async def run() -> None:
+        from app.services import accounts as accounts_service
+        from app.services import balances
+
+        await accounts_service.refresh_balances()
+        await balances.refresh()
+
+    await _guarded("balances", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -103,6 +116,7 @@ async def main() -> None:
         id="reconcile",
     )
     scheduler.add_job(task_inventory, "interval", seconds=600, id="inventory")
+    scheduler.add_job(task_balances, "interval", seconds=300, id="balances")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     scheduler.start()
 

@@ -223,21 +223,70 @@ async def _whoami() -> int:
 
 
 async def _balance() -> int:
-    """Показать балансы."""
+    """Показать балансы с сырыми значениями от Telegram.
+
+    Сырые числа нужны, чтобы отличить настоящий ноль от ошибки
+    пересчёта: Stars приходят целыми с нанодолями, TON — в нанотонах.
+    """
+    from telethon.tl import functions, types
+
     from app.adapters.registry import get_adapter
     from app.adapters.ton import TonClient
     from app.enums import Market
+    from app.services import secrets
 
     adapter = get_adapter(Market.TELEGRAM)
-    for item in await adapter.balance():
-        print(f"Telegram · {item.currency.value}: {item.amount}")
+    print(f"Аккаунт: {adapter.label}\n")
 
-    if settings.ton_wallet_address:
+    print("--- Stars (payments.getStarsStatus) ---")
+    try:
+        res = await adapter.gateway.call(
+            functions.payments.GetStarsStatusRequest(peer=types.InputPeerSelf())
+        )
+        raw = getattr(res, "balance", None)
+        print(f"  сырой ответ : {raw}")
+        for item in await adapter.balance():
+            print(f"  {item.currency.value}: {item.amount}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  недоступно: {type(exc).__name__}: {exc}")
+
+    print("\n--- TON внутри Telegram (payments.getStarsStatus ton=True) ---")
+    try:
+        res = await adapter.gateway.call(
+            functions.payments.GetStarsStatusRequest(
+                peer=types.InputPeerSelf(), ton=True
+            )
+        )
+        raw = getattr(res, "balance", None)
+        amount = getattr(raw, "amount", None)
+        print(f"  сырой ответ : {raw}")
+        if amount is not None:
+            print(f"  нанотоны    : {amount}")
+            print(f"  в TON       : {Decimal(amount) / Decimal(10) ** 9}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  недоступно: {type(exc).__name__}: {exc}")
+
+    address = secrets.resolve("TON_WALLET_ADDRESS", settings.ton_wallet_address)
+    print("\n--- Внешний кошелёк TON ---")
+    if not address:
+        print("  адрес не задан (панель → Настройки → Адрес кошелька TON)")
+    else:
         ton = TonClient()
         try:
-            print(f"TON-кошелёк: {await ton.balance()} TON")
+            print(f"  {address}")
+            print(f"  баланс: {await ton.balance(address)} TON")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  недоступно: {type(exc).__name__}: {exc}")
         finally:
             await ton.close()
+
+    print(
+        "\nЕсли здесь нули, а деньги вы видите в Telegram — проверьте, где именно:\n"
+        "  • Stars          — Настройки → Мой профиль → Звёзды\n"
+        "  • TON за подарки — приходит сюда же, в getStarsStatus(ton=True)\n"
+        "  • @wallet        — ОТДЕЛЬНЫЙ сервис, боту не виден.\n"
+        "                     Рубли и TON в @wallet сюда не попадают."
+    )
     return 0
 
 
