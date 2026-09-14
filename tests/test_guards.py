@@ -43,12 +43,30 @@ def test_semi_mode_allows_official_market():
     guard(TradeMode.SEMI, Market.TELEGRAM, Capability.BUY)
 
 
-def test_private_market_buy_is_unavailable():
-    """Покупка на приватных площадках закрыта на уровне адаптера."""
+def test_private_market_buy_blocked_by_default():
+    """По умолчанию покупка на приватных площадках запрещена.
+
+    Боевой режим каждой площадки включается отдельным флагом, и даже
+    после этого нужен файл контракта с описанием эндпоинтов.
+    """
     settings.kill_switch = False
     for market in (Market.PORTALS, Market.MRKT, Market.TONNEL, Market.GETGEMS):
-        with pytest.raises(ExecutionBlocked, match="недоступна"):
+        with pytest.raises(ExecutionBlocked):
             guard(TradeMode.SEMI, market, Capability.BUY)
+
+
+def test_write_flag_alone_does_not_open_buy(monkeypatch):
+    """Одного флага мало: без контракта эндпоинтов покупки нет."""
+    from app.adapters import registry
+
+    settings.kill_switch = False
+    monkeypatch.setattr(settings, "portals_enable_write", True)
+    registry._ADAPTERS.clear()
+    try:
+        with pytest.raises(ExecutionBlocked, match="недоступна"):
+            guard(TradeMode.SEMI, Market.PORTALS, Capability.BUY)
+    finally:
+        registry._ADAPTERS.clear()
 
 
 def test_auto_requires_whitelist():

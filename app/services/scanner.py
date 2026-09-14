@@ -299,6 +299,8 @@ async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
             if exists is not None:
                 # Обновляем цену и оценку вместо создания дубликата.
                 exists.price_stars = price_stars
+                exists.price_native = dto.price
+                exists.native_currency = dto.currency
                 exists.fair_value_stars = result.fair_value
                 exists.net_roi = result.net_roi
                 exists.risk_score = result.risk_score
@@ -317,6 +319,8 @@ async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
                     market=dto.market,
                     listing_external_id=dto.external_id,
                     price_stars=price_stars,
+                    price_native=dto.price,
+                    native_currency=dto.currency,
                     fair_value_stars=result.fair_value,
                     net_roi=result.net_roi,
                     risk_score=result.risk_score,

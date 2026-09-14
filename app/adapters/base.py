@@ -173,10 +173,19 @@ class MarketAdapter(abc.ABC):
     def is_auto_safe(self, capability: Capability) -> bool:
         """Допустима ли операция в автономном режиме.
 
-        Только SUPPORTED (официальный API). Приватные/reverse-engineered
-        коннекторы в AUTO не пускаются — прямое требование аудита.
+        SUPPORTED (официальный API) — всегда. EXPERIMENTAL (приватный
+        API без SLA) — только если владелец явно снял этот запрет
+        флагом ALLOW_EXPERIMENTAL_AUTO, приняв риск блокировки
+        площадки и потери средств.
         """
-        return self.status_of(capability) is CapabilityStatus.SUPPORTED
+        from app.config import settings
+
+        status = self.status_of(capability)
+        if status is CapabilityStatus.SUPPORTED:
+            return True
+        if status is CapabilityStatus.EXPERIMENTAL:
+            return bool(settings.allow_experimental_auto)
+        return False
 
     def _require(self, capability: Capability) -> None:
         """Проверить возможность до сетевого вызова."""

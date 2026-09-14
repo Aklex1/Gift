@@ -10,6 +10,9 @@
     scan        — разовый проход сканера
     inventory   — сверка портфеля с инвентарём
     doctor      — проверка конфигурации перед запуском
+    contract    — работа с боевым контрактом площадки:
+                  `contract portals` показывает состояние,
+                  `contract portals --template` создаёт заготовку
 """
 
 from __future__ import annotations
@@ -150,6 +153,120 @@ async def _scan() -> int:
     return 0
 
 
+async def _contract(market_name: str, make_template: bool) -> int:
+    """Проверить готовность площадки к боевому режиму.
+
+    Ничего не покупает: только читает каталог, инвентарь и проверяет,
+    описаны ли write-эндпоинты.
+    """
+    from app.adapters.base import Capability, CapabilityStatus
+    from app.adapters.contracts import (
+        WRITE_OPS,
+        contract_path,
+        is_placeholder,
+        load,
+        write_template,
+    )
+    from app.adapters.registry import get_adapter
+    from app.config import settings as cfg
+    from app.enums import Market
+
+    try:
+        market = Market(market_name)
+    except ValueError:
+        print(f"✗ Неизвестная площадка: {market_name}", file=sys.stderr)
+        print(f"  Доступные: {', '.join(m.value for m in Market)}", file=sys.stderr)
+        return 1
+
+    if make_template:
+        path = write_template(market.value)
+        print(f"✓ Заготовка контракта: {path}")
+        print("  Заполните пути по реальным запросам мини-приложения")
+        print("  (DevTools -> Network) и запустите проверку снова.")
+        return 0
+
+    print(f"=== Готовность {market.value} к боевому режиму ===\n")
+    problems = 0
+
+    # 1. Флаг площадки
+    write_on = cfg.market_write_enabled(market.value)
+    print(f"{'✓' if write_on else '✗'} Боевой режим: "
+          f"{market.value.upper()}_ENABLE_WRITE = {str(write_on).lower()}")
+    if not write_on:
+        problems += 1
+
+    # 2. Контракт
+    path = contract_path(market.value)
+    contract = load(market.value)
+    if not path.exists():
+        print(f"✗ Контракт не создан: {path}")
+        print(f"  Создайте заготовку: gift-cli contract {market.value} --template")
+        problems += 1
+    elif is_placeholder(market.value):
+        print(f"✗ Контракт не заполнен (остались заглушки ЗАПОЛНИТЕ): {path}")
+        problems += 1
+    else:
+        described = contract.described
+        print(f"✓ Контракт: {path}")
+        for op in WRITE_OPS:
+            mark = "✓" if op in described else "·"
+            endpoint = contract.get(op)
+            detail = f"{endpoint.method} {endpoint.path}" if endpoint else "не описана"
+            print(f"    {mark} {op}: {detail}")
+        if "buy" not in described:
+            print("  ! без операции buy автоматическая покупка невозможна")
+            problems += 1
+
+    # 3. Живая проверка чтения
+    adapter = get_adapter(market)
+    print()
+    try:
+        rows = await adapter.search(limit=3)
+        print(f"✓ Поиск работает: получено лотов {len(rows)}")
+        for row in rows[:3]:
+            print(f"    {row.gift.collection} #{row.gift.number or '?'} "
+                  f"— {row.price} {row.currency.value} (id={row.external_id})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"✗ Поиск не работает: {type(exc).__name__}: {exc}")
+        problems += 1
+
+    if adapter.supports(Capability.INVENTORY):
+        try:
+            owned = await adapter.inventory()
+            print(f"✓ Инвентарь читается: {len(owned)} подарков "
+                  f"(нужен для сверки после покупки)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"✗ Инвентарь не читается: {type(exc).__name__}: {exc}")
+            print("  Без инвентаря нельзя свести неизвестный исход покупки.")
+            problems += 1
+    else:
+        print("✗ Инвентарь недоступен — сверка после покупки работать не будет")
+        problems += 1
+
+    # 4. Лимиты
+    print()
+    cap = cfg.market_trade_cap(market, adapter.native_currency)
+    if cap is None:
+        print(f"✗ Не задан лимит сделки "
+              f"({market.value.upper()}_MAX_TRADE_TON)")
+        problems += 1
+    else:
+        print(f"✓ Лимит одной сделки: {cap} {adapter.native_currency.value}")
+
+    auto_on = market.value in cfg.auto_markets and cfg.allow_experimental_auto
+    print(f"  Автономный режим: {'разрешён' if auto_on else 'выключен'}")
+
+    # 5. Итог
+    print()
+    buy_status = adapter.status_of(Capability.BUY)
+    if problems == 0 and buy_status is not CapabilityStatus.UNAVAILABLE:
+        print("✓ Площадка готова к торговле с подтверждением (SEMI).")
+        print("  Начните с малого лимита и проверьте первую сделку вручную.")
+        return 0
+    print(f"✗ К торговле не готова: проблем {problems}")
+    return 1
+
+
 async def _inventory() -> int:
     """Сверка портфеля с инвентарём Telegram."""
     from app.db import init_db
@@ -248,9 +365,25 @@ def main(argv: list[str] | None = None) -> int:
             "scan",
             "inventory",
             "doctor",
+            "contract",
         ],
     )
+    parser.add_argument(
+        "market",
+        nargs="?",
+        help="площадка для команды contract (portals, mrkt, telegram, …)",
+    )
+    parser.add_argument(
+        "--template",
+        action="store_true",
+        help="создать заготовку контракта вместо проверки",
+    )
     args = parser.parse_args(argv)
+
+    if args.command == "contract":
+        if not args.market:
+            parser.error("укажите площадку: gift-cli contract portals")
+        return asyncio.run(_contract(args.market, args.template))
 
     sync_commands = {"gen-key": cmd_gen_key, "init": cmd_init, "doctor": cmd_doctor}
     if args.command in sync_commands:

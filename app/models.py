@@ -540,7 +540,14 @@ class Candidate(Base, TimestampMixin):
     market: Mapped[Market] = mapped_column(EnumStr(Market), index=True)
     listing_external_id: Mapped[str] = mapped_column(String(128))
 
+    #: Цена, приведённая к Stars — для сравнения площадок между собой.
     price_stars: Mapped[Decimal] = mapped_column(Money)
+    #: Цена в валюте площадки. Именно её принимает адаптер при покупке:
+    #: для Portals/MRKT это TON, и подставлять сюда Stars нельзя.
+    price_native: Mapped[Decimal | None] = mapped_column(Money)
+    native_currency: Mapped[Currency] = mapped_column(
+        EnumStr(Currency), default=Currency.STARS
+    )
     fair_value_stars: Mapped[Decimal] = mapped_column(Money)
     net_roi: Mapped[Decimal] = mapped_column(Money, index=True)
     risk_score: Mapped[int] = mapped_column(Integer)

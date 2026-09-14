@@ -76,8 +76,9 @@ def check_auto_allowed(market: Market, capability: Capability) -> None:
     adapter = get_adapter(market)
     if not adapter.is_auto_safe(capability):
         raise ExecutionBlocked(
-            f"{market.value}: операция {capability.value} не имеет статуса "
-            f"supported и запрещена в автономном режиме"
+            f"{market.value}: операция {capability.value} не разрешена "
+            f"в автономном режиме (статус {adapter.status_of(capability).value}; "
+            f"для приватных API нужен ALLOW_EXPERIMENTAL_AUTO=true)"
         )
     if market.value not in settings.auto_markets:
         raise ExecutionBlocked(
@@ -89,10 +90,18 @@ def guard(mode: TradeMode, market: Market, capability: Capability) -> None:
     """Полный набор проверок перед write-вызовом."""
     check_kill_switch()
 
+    if not settings.market_write_enabled(market.value):
+        raise ExecutionBlocked(
+            f"{market.value}: боевой режим выключен "
+            f"({market.value.upper()}_ENABLE_WRITE=false)"
+        )
+
     adapter = get_adapter(market)
     if not adapter.supports(capability):
         raise ExecutionBlocked(
-            f"{market.value}: операция {capability.value} недоступна"
+            f"{market.value}: операция {capability.value} недоступна "
+            f"(не описана в контракте markets/{market.value}.json "
+            f"или нет доступа к площадке)"
         )
 
     if mode is TradeMode.SAFE:
@@ -146,8 +155,28 @@ async def execute_buy(
         if not ok:
             return {"ok": False, "detail": reason}
 
-        price = Decimal(candidate.price_stars)
+        # Цена в валюте площадки — именно её ждёт адаптер.
+        # Для Portals/MRKT это TON; передать сюда Stars значило бы
+        # промахнуться на два порядка.
+        native_price = Decimal(
+            candidate.price_native
+            if candidate.price_native is not None
+            else candidate.price_stars
+        )
+        native_currency = candidate.native_currency or Currency.STARS
+        price_stars = Decimal(candidate.price_stars)
         external_id = candidate.listing_external_id
+
+        # Предохранитель на сумму сделки в валюте площадки.
+        cap = settings.market_trade_cap(market, native_currency)
+        if cap is not None and native_price > cap:
+            return {
+                "ok": False,
+                "detail": (
+                    f"цена {native_price} {native_currency.value} выше лимита "
+                    f"{cap} для {market.value}"
+                ),
+            }
 
         # --- 2. Намерение (идемпотентность) ---
         intent = saga.plan(
@@ -156,8 +185,8 @@ async def execute_buy(
             market=market,
             mode=effective,
             external_id=external_id,
-            price=price,
-            currency=Currency.STARS,
+            price=native_price,
+            currency=native_currency,
             strategy_id=strategy.id,
             gift_id=candidate.gift_id,
             decision=candidate.rationale or {},
@@ -172,11 +201,30 @@ async def execute_buy(
         # --- 3. Резерв бюджета ДО внешнего вызова ---
         if not strategy.budget_id:
             return {"ok": False, "detail": "у стратегии нет бюджета"}
+        # Бюджет ведётся в своей валюте: приводим цену к ней.
+        budget_currency = _budget_currency(session, strategy.budget_id)
+        reserve_amount = _convert(
+            session, native_price, native_currency, budget_currency
+        )
+        if reserve_amount is None:
+            saga.transition(
+                session,
+                intent,
+                IntentStatus.CANCELLED,
+                error=f"нет курса {native_currency.value}->{budget_currency.value}",
+            )
+            return {
+                "ok": False,
+                "detail": (
+                    f"не удалось пересчитать цену из {native_currency.value} "
+                    f"в валюту бюджета {budget_currency.value}"
+                ),
+            }
         try:
             reservation = budget_service.reserve(
                 session,
                 budget_id=strategy.budget_id,
-                amount=price,
+                amount=reserve_amount,
                 intent_id=intent.id,
                 note=f"покупка {external_id}",
             )
@@ -197,7 +245,13 @@ async def execute_buy(
                 actor=actor,
                 action="buy.start",
                 target=f"candidate:{candidate_id}",
-                payload={"price": str(price), "market": market.value, "mode": effective.value},
+                payload={
+                    "price": str(native_price),
+                    "currency": native_currency.value,
+                    "price_stars": str(price_stars),
+                    "market": market.value,
+                    "mode": effective.value,
+                },
             )
         )
 
@@ -214,7 +268,7 @@ async def execute_buy(
     try:
         result = await adapter.buy(
             external_id=external_id,
-            expected_price=price,
+            expected_price=native_price,
             idempotency_key=idempotency_key,
         )
     except OutcomeUnknown as exc:
@@ -260,7 +314,8 @@ async def execute_buy(
             return {"ok": False, "detail": result.detail or "покупка не прошла"}
 
         # Успех: списываем резерв и создаём позицию.
-        executed = result.executed_price or price
+        executed = result.executed_price or native_price
+        executed_currency = result.currency or native_currency
         saga.transition(
             session,
             intent,
@@ -268,7 +323,11 @@ async def execute_buy(
             external_ref=result.external_ref,
             executed_price=executed,
         )
-        budget_service.settle(session, reservation_id, actual_amount=executed)
+        settled = (
+            _convert(session, executed, executed_currency, budget_currency)
+            or reserve_amount
+        )
+        budget_service.settle(session, reservation_id, actual_amount=settled)
 
         position = _create_position(
             session,
@@ -276,6 +335,7 @@ async def execute_buy(
             strategy_id=intent.strategy_id,
             market=market,
             price=executed,
+            currency=executed_currency,
             intent_id=intent_id,
         )
         session.add(
@@ -285,7 +345,7 @@ async def execute_buy(
                 market=market,
                 kind="buy",
                 amount=executed,
-                currency=Currency.STARS,
+                currency=executed_currency,
                 external_ref=result.external_ref,
             )
         )
@@ -294,10 +354,39 @@ async def execute_buy(
 
         return {
             "ok": True,
-            "detail": f"куплено за {executed} Stars",
+            "detail": f"куплено за {executed} {executed_currency.value}",
             "intent_id": intent_id,
             "position_id": position.id,
         }
+
+
+def _budget_currency(session: Session, budget_id: int | None) -> Currency:
+    """Валюта, в которой ведётся бюджет стратегии."""
+    from app.models import Budget
+
+    budget = session.get(Budget, budget_id) if budget_id else None
+    return budget.currency if budget else Currency.STARS
+
+
+def _convert(
+    session: Session, amount: Decimal, source: Currency, target: Currency
+) -> Decimal | None:
+    """Перевести сумму между валютами по последнему FX-снапшоту."""
+    from app.services import marketdata
+
+    if source is target:
+        return amount
+    if target is Currency.STARS:
+        return marketdata.to_stars(session, amount, source)
+    stars = marketdata.to_stars(session, amount, source)
+    if stars is None:
+        return None
+    rate = marketdata.latest_fx(session, target, Currency.STARS)
+    if rate is None and target is Currency.TON:
+        rate = marketdata.DEFAULT_STARS_PER_TON
+    if not rate or rate <= 0:
+        return None
+    return stars / rate
 
 
 def _create_position(
@@ -308,6 +397,7 @@ def _create_position(
     market: Market,
     price: Decimal,
     intent_id: int,
+    currency: Currency = Currency.STARS,
 ) -> Position:
     """Создать позицию в портфеле после успешной покупки."""
     position = Position(
@@ -317,13 +407,19 @@ def _create_position(
         custody_market=market,
         buy_market=market,
         buy_price=price,
-        buy_currency=Currency.STARS,
+        buy_currency=currency,
         bought_at=utcnow(),
         buy_intent_id=intent_id,
     )
     session.add(position)
     session.flush()
-    log.info("Открыта позиция #%s: подарок %s за %s Stars", position.id, gift_id, price)
+    log.info(
+        "Открыта позиция #%s: подарок %s за %s %s",
+        position.id,
+        gift_id,
+        price,
+        currency.value,
+    )
     return position
 
 
@@ -419,7 +515,8 @@ async def execute_list(
             position.list_external_id = result.external_ref
             position.listed_at = utcnow()
             position.last_reprice_at = utcnow()
-            return {"ok": True, "detail": f"выставлено за {price} Stars"}
+            currency = get_adapter(market).native_currency
+            return {"ok": True, "detail": f"выставлено за {price} {currency.value}"}
 
         saga.transition(session, intent, IntentStatus.FAILED, error=result.detail)
         return {"ok": False, "detail": result.detail or "не удалось выставить"}

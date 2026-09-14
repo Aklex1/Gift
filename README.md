@@ -57,6 +57,7 @@ NGINX_PORT=8082 WEB_PORT=8092 bash /opt/gift/deploy/install.sh
 
 **Какие ключи нужны и где их взять — [docs/SETUP.md](docs/SETUP.md).**
 **Чем пополнять кошелёк — [docs/WALLET.md](docs/WALLET.md).**
+**Торговля на Portals и MRKT — [docs/BATTLE_MODE.md](docs/BATTLE_MODE.md).**
 
 ---
 
@@ -92,18 +93,21 @@ NGINX_PORT=8082 WEB_PORT=8092 bash /opt/gift/deploy/install.sh
 
 | Площадка | Чтение | Покупка | Статус |
 |---|---|---|---|
-| **Telegram** (MTProto) | да | **да** | `supported` — официальный API |
-| Portals | да* | нет | `experimental` — приватный API |
-| MRKT | да* | нет | `experimental` — приватный API |
-| Tonnel | да* | нет | `experimental` — приватный API |
-| Getgems | да* | нет | `experimental` — публичный API, write требует подписи кошельком |
+| **Telegram** (MTProto) | да | **да**, из коробки | `supported` — официальный API |
+| Portals | да* | да, после настройки | `experimental` — приватный API без SLA |
+| MRKT | да* | да, после настройки | `experimental` — приватный API без SLA |
+| Tonnel | да* | нет | `experimental` — Cloudflare, нестабильное чтение |
+| Getgems | да* | нет | покупка требует подписи кошельком |
 
 \* при наличии токена; токены протухают, бот это переживает.
 
-Торговля идёт на официальном маркете Telegram. Остальные площадки —
-источник рыночных цен для оценки. Так решено осознанно: без
-партнёрского доступа write-операции в приватный API — неуправляемый
-риск потери средств.
+Из коробки бот торгует только на официальном маркете Telegram.
+Торговля на Portals и MRKT включается вручную и требует трёх
+независимых действий: флага площадки, файла с описанием её
+эндпоинтов и лимита на сделку — см. **[docs/BATTLE_MODE.md](docs/BATTLE_MODE.md)**.
+Так сделано потому, что у этих площадок нет публичного API: путь
+покупки нельзя зашить в код, его описывает владелец по реальным
+запросам, а ошибка в описании стоит денег.
 
 ---
 
@@ -147,6 +151,8 @@ gift-cli balance     # балансы
 gift-cli probe       # живая проверка площадок (только чтение)
 gift-cli scan        # разовый скан
 gift-cli inventory   # сверка портфеля
+gift-cli contract portals            # готовность площадки к торговле
+gift-cli contract portals --template # заготовка контракта эндпоинтов
 ```
 
 ### Веб-панель

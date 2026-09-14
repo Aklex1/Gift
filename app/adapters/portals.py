@@ -52,8 +52,7 @@ class PortalsAdapter(HttpMarketAdapter):
             Capability.INVENTORY: (
                 CapabilityStatus.EXPERIMENTAL if has_auth else CapabilityStatus.UNAVAILABLE
             ),
-            # Write-контур намеренно закрыт: покупка через приватный API
-            # без SLA — это неуправляемый риск потери средств.
+            # Боевые операции закрыты, пока их не откроет контракт.
             Capability.BUY: CapabilityStatus.UNAVAILABLE,
             Capability.LIST: CapabilityStatus.UNAVAILABLE,
             Capability.REPRICE: CapabilityStatus.UNAVAILABLE,
@@ -62,6 +61,11 @@ class PortalsAdapter(HttpMarketAdapter):
                 CapabilityStatus.EXPERIMENTAL if has_auth else CapabilityStatus.UNAVAILABLE
             ),
         }
+        # Открывает buy/list/reprice/cancel, если PORTALS_ENABLE_WRITE=true
+        # и операции описаны в markets/portals.json.
+        self.load_write_contract(
+            enabled=bool(settings.portals_enable_write and has_auth)
+        )
 
     async def search(
         self,
@@ -190,6 +194,80 @@ class PortalsAdapter(HttpMarketAdapter):
                 )
             )
         return out
+
+    # ------------------------------------------------------------------
+    # Боевые операции
+    # ------------------------------------------------------------------
+    async def buy(
+        self, *, external_id: str, expected_price: Decimal, idempotency_key: str
+    ) -> ExecutionResult:
+        """Купить лот на Portals по точной ожидаемой цене.
+
+        Перед покупкой лот перечитывается: если он исчез или подорожал,
+        сделка отменяется без обращения к платёжному эндпоинту.
+        """
+        self._require(Capability.BUY)
+
+        fresh = await self._fetch_listing(external_id)
+        if fresh is None:
+            return ExecutionResult(ok=False, detail="лот больше не доступен")
+        if fresh.price != expected_price:
+            return ExecutionResult(
+                ok=False,
+                detail=(
+                    f"цена изменилась: ожидали {expected_price} TON, "
+                    f"на площадке {fresh.price} TON"
+                ),
+            )
+        return await self.execute_contract_op(
+            "buy", external_id=external_id, price=expected_price
+        )
+
+    async def list_for_sale(
+        self, *, gift_ref: GiftRef, price: Decimal, idempotency_key: str
+    ) -> ExecutionResult:
+        """Выставить подарок на продажу."""
+        self._require(Capability.LIST)
+        external_id = gift_ref.slug or gift_ref.nft_address or ""
+        return await self.execute_contract_op(
+            "list", external_id=external_id, price=price
+        )
+
+    async def reprice(
+        self, *, external_id: str, new_price: Decimal, idempotency_key: str
+    ) -> ExecutionResult:
+        """Изменить цену своего лота."""
+        self._require(Capability.REPRICE)
+        op = "reprice" if self.contract.has("reprice") else "list"
+        return await self.execute_contract_op(
+            op, external_id=external_id, price=new_price
+        )
+
+    async def cancel(self, *, external_id: str, idempotency_key: str) -> ExecutionResult:
+        """Снять лот с продажи."""
+        self._require(Capability.CANCEL)
+        return await self.execute_contract_op("cancel", external_id=external_id)
+
+    async def _fetch_listing(self, external_id: str) -> ListingDTO | None:
+        """Перечитать конкретный лот перед покупкой."""
+        try:
+            data = await self.request("GET", f"/nfts/{external_id}")
+        except Exception as exc:  # noqa: BLE001 - отсутствие лота не ошибка
+            log.debug("Portals: лот %s недоступен: %s", external_id, exc)
+            return None
+        item = data.get("nft") if isinstance(data, dict) and "nft" in data else data
+        if not isinstance(item, dict):
+            return None
+        price = to_decimal(first(item, "price", "amount"))
+        if price is None or price <= 0:
+            return None
+        return ListingDTO(
+            market=self.market,
+            external_id=external_id,
+            gift=self.parse_gift(item),
+            price=price,
+            currency=Currency.TON,
+        )
 
     async def reconcile(
         self, *, external_ref: str | None, gift_ref: GiftRef | None

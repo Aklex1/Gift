@@ -72,10 +72,50 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
+def sync_columns() -> list[str]:
+    """Добавить недостающие колонки в уже существующие таблицы.
+
+    ``create_all`` создаёт новые таблицы, но не меняет старые. При
+    обновлении версии на работающем сервере новые поля иначе остались
+    бы отсутствующими, и запросы падали бы.
+
+    Делается только добавление колонок — существующие данные не
+    трогаются, ничего не удаляется.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    added: list[str] = []
+
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {col["name"] for col in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in present:
+                    continue
+                col_type = column.type.compile(dialect=engine.dialect)
+                sql = (
+                    f'ALTER TABLE "{table.name}" '
+                    f'ADD COLUMN "{column.name}" {col_type}'
+                )
+                # NOT NULL без значения по умолчанию на непустой таблице
+                # добавить нельзя — такие колонки заводим допускающими NULL.
+                conn.execute(text(sql))
+                added.append(f"{table.name}.{column.name}")
+                log.info("Добавлена колонка %s.%s", table.name, column.name)
+    return added
+
+
 def init_db() -> None:
-    """Создать схему, если её нет."""
+    """Создать схему и догнать её до текущей версии моделей."""
     settings.ensure_dirs()
     Base.metadata.create_all(engine)
+    added = sync_columns()
+    if added:
+        log.info("Схема обновлена, новых колонок: %s", len(added))
     log.info("Схема БД готова: %s", engine.url.render_as_string(hide_password=True))
 
 

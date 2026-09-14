@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import functools
+from decimal import Decimal  # noqa: F401 - используется в аннотации
 from pathlib import Path
 
 from pydantic import Field, field_validator, model_validator
@@ -77,9 +78,21 @@ class Settings(BaseSettings):
         default="https://portals-market.com/api", alias="PORTALS_BASE_URL"
     )
     portals_auth: str = Field(default="", alias="PORTALS_AUTH")
+    #: Разрешить боевые операции (покупка/продажа) на Portals.
+    #: Требует заполненного файла контракта markets/portals.json.
+    portals_enable_write: bool = Field(default=False, alias="PORTALS_ENABLE_WRITE")
+    #: Потолок одной сделки на Portals, в TON.
+    portals_max_trade_ton: float = Field(default=0, alias="PORTALS_MAX_TRADE_TON")
 
-    mrkt_base_url: str = Field(default="https://api.mrkt.land", alias="MRKT_BASE_URL")
+    #: Реальный публичный хост MRKT (см. github.com/boostNT/MRKT-API).
+    mrkt_base_url: str = Field(
+        default="https://api.tgmrkt.io/api/v1", alias="MRKT_BASE_URL"
+    )
     mrkt_auth: str = Field(default="", alias="MRKT_AUTH")
+    #: initData мини-приложения: позволяет боту самому получать токен.
+    mrkt_init_data: str = Field(default="", alias="MRKT_INIT_DATA")
+    mrkt_enable_write: bool = Field(default=False, alias="MRKT_ENABLE_WRITE")
+    mrkt_max_trade_ton: float = Field(default=0, alias="MRKT_MAX_TRADE_TON")
 
     tonnel_base_url: str = Field(
         default="https://gifts2.tonnel.network/api", alias="TONNEL_BASE_URL"
@@ -118,6 +131,12 @@ class Settings(BaseSettings):
     reservation_ttl_sec: int = Field(default=180, alias="RESERVATION_TTL_SEC")
     #: Какие площадки разрешены для AUTO (через запятую). Пусто = ни одной.
     auto_whitelist: str = Field(default="", alias="AUTO_WHITELIST")
+    #: Допустить площадки со статусом experimental в автономный режим.
+    #: По умолчанию выключено: приватные API без SLA торгуют только
+    #: с подтверждением владельца. Включать осознанно.
+    allow_experimental_auto: bool = Field(
+        default=False, alias="ALLOW_EXPERIMENTAL_AUTO"
+    )
 
     # ------------------------------------------------------------------
     # Воркеры
@@ -177,6 +196,37 @@ class Settings(BaseSettings):
             if c.strip()
         }
 
+    def market_write_enabled(self, market: str) -> bool:
+        """Разрешены ли боевые операции на площадке."""
+        return {
+            "telegram": True,
+            "portals": self.portals_enable_write,
+            "mrkt": self.mrkt_enable_write,
+        }.get(str(market), False)
+
+    def market_trade_cap(self, market: object, currency: object) -> "Decimal | None":
+        """Потолок одной сделки для площадки в её валюте.
+
+        None означает «предел не задан».
+        """
+        from decimal import Decimal as _D
+
+        name = str(market)
+        if name == "telegram":
+            cap = _D(self.max_trade_stars or 0)
+        elif name == "portals":
+            cap = _D(str(self.portals_max_trade_ton or 0))
+        elif name == "mrkt":
+            cap = _D(str(self.mrkt_max_trade_ton or 0))
+        else:
+            cap = _D(0)
+        return cap if cap > 0 else None
+
+    @property
+    def contracts_dir(self) -> Path:
+        """Каталог с описаниями write-эндпоинтов площадок."""
+        return self.data_dir / "markets"
+
     @property
     def session_path(self) -> Path:
         """Полный путь к файлу Telethon-сессии."""
@@ -186,6 +236,7 @@ class Settings(BaseSettings):
         """Создать рабочие каталоги, если их нет."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "logs").mkdir(parents=True, exist_ok=True)
+        self.contracts_dir.mkdir(parents=True, exist_ok=True)
 
 
 @functools.lru_cache(maxsize=1)

@@ -22,11 +22,16 @@ import httpx
 
 from app.adapters.base import (
     AuthRequired,
+    Capability,
+    CapabilityUnavailable,
+    CapabilityStatus,
+    ExecutionResult,
     GiftRef,
     MarketAdapter,
     OutcomeUnknown,
     RateLimited,
 )
+from app.adapters.contracts import ContractError, MarketContract, load as load_contract
 
 log = logging.getLogger(__name__)
 
@@ -213,6 +218,79 @@ class HttpMarketAdapter(MarketAdapter):
             ),
             nft_address=first(item, "address", "nft_address", "nftAddress"),
             attributes={"source": item.get("_source")},
+        )
+
+    # ------------------------------------------------------------------
+    # Боевой контур
+    # ------------------------------------------------------------------
+    def load_write_contract(self, *, enabled: bool) -> MarketContract:
+        """Загрузить контракт write-операций и открыть соответствующие
+        возможности.
+
+        Возможность открывается только если выполнены оба условия:
+        боевой режим площадки явно включён в конфиге И операция описана
+        в файле контракта. Иначе она остаётся UNAVAILABLE, и адаптер
+        физически не может потратить деньги.
+        """
+        self.contract = MarketContract(self.market.value, {})
+        if not enabled:
+            return self.contract
+        try:
+            self.contract = load_contract(self.market.value)
+        except ContractError as exc:
+            log.error("%s: боевой режим выключен, контракт неверен: %s",
+                      self.market.value, exc)
+            return self.contract
+
+        mapping = {
+            "buy": Capability.BUY,
+            "list": Capability.LIST,
+            "reprice": Capability.REPRICE,
+            "cancel": Capability.CANCEL,
+        }
+        opened = []
+        for op, capability in mapping.items():
+            if self.contract.has(op):
+                # Статус остаётся EXPERIMENTAL: у площадки нет SLA,
+                # и в AUTO она попадёт только при отдельном разрешении.
+                self.capabilities[capability] = CapabilityStatus.EXPERIMENTAL
+                opened.append(op)
+        if opened:
+            log.warning(
+                "%s: включён боевой режим для операций: %s",
+                self.market.value,
+                ", ".join(opened),
+            )
+        return self.contract
+
+    async def execute_contract_op(
+        self,
+        op: str,
+        *,
+        external_id: str,
+        price: Decimal | None = None,
+    ) -> ExecutionResult:
+        """Выполнить write-операцию по описанию из контракта."""
+        endpoint = getattr(self, "contract", None) and self.contract.get(op)
+        if endpoint is None:
+            raise CapabilityUnavailable(
+                f"{self.market.value}: операция {op} не описана в контракте"
+            )
+
+        method, path, kwargs = endpoint.render(
+            external_id=external_id, price=price
+        )
+        # write=True: обрыв связи даст OutcomeUnknown, а не молчаливый повтор.
+        response = await self.request(method, path, write=True, retries=0, **kwargs)
+
+        ok = endpoint.succeeded(response)
+        return ExecutionResult(
+            ok=ok,
+            external_ref=external_id,
+            executed_price=price,
+            currency=self.native_currency,
+            detail=f"{op}: ответ получен" if ok else f"{op}: площадка отказала",
+            raw=response if isinstance(response, dict) else {},
         )
 
     async def close(self) -> None:
