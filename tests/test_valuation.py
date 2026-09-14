@@ -170,3 +170,25 @@ def test_list_price_never_below_break_even(session):
     )
     # При комиссии 20% безубыточность = 1000/0.8 = 1250, с маржой 2% = 1275.
     assert price >= Decimal("1275")
+
+
+def test_cheaper_market_commission_changes_verdict(session):
+    """Одна и та же сделка на разных площадках оценивается по-разному.
+
+    Telegram удерживает около 20%, Portals — около 2,5%. Сделка,
+    убыточная на первой, может быть прибыльной на второй.
+    """
+    seed_fee_schedules(session)
+    common = dict(buy_price=Decimal("850"), snapshot=_snapshot(median="1000"))
+
+    on_telegram = evaluate(
+        session, buy_market=Market.TELEGRAM, sell_market=Market.TELEGRAM,
+        is_official_api=True, **common,
+    )
+    on_portals = evaluate(
+        session, buy_market=Market.PORTALS, sell_market=Market.PORTALS,
+        is_official_api=False, **common,
+    )
+
+    assert on_telegram.net_profit < 0, "при комиссии 20% это убыток"
+    assert on_portals.net_profit > on_telegram.net_profit

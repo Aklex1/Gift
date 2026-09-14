@@ -294,3 +294,18 @@ def test_session_with_auth_key_is_authorized(session, data_dir):
 
     assert accounts_service.is_authorized(account) is True
     assert len(accounts_service.usable(session)) == 1
+
+
+def test_zero_balance_prints_as_zero():
+    """Нулевой баланс не должен выглядеть как ошибка.
+
+    Decimal печатает малые значения как 0E-9 — в интерфейсе это
+    читается как сбой, хотя это обычный ноль.
+    """
+    from app.services.gifts import format_amount, format_stars
+
+    assert format_stars(Decimal("0E-9")) == "0"
+    assert format_amount(Decimal("0E-9")) == "0"
+    assert format_amount(Decimal("0.000023996")) == "0.000024"
+    assert format_amount(Decimal("12.5000")) == "12.5"
+    assert format_amount(None) == "—"

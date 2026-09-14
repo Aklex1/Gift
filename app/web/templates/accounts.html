@@ -36,11 +36,11 @@
   <div class="account-balances">
     <div class="bal">
       <span class="label">Stars</span>
-      <span class="value">{{ fmt(a.stars) if a.stars is not none else '—' }} ★</span>
+      <span class="value">{{ fmt(a.stars) }} ★</span>
     </div>
     <div class="bal">
       <span class="label">TON</span>
-      <span class="value">{{ '%.4f'|format(a.ton|float) if a.ton is not none else '—' }}</span>
+      <span class="value">{{ amount(a.ton) }}</span>
     </div>
     <div class="bal">
       <span class="label">Обновлено</span>

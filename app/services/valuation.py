@@ -22,7 +22,11 @@ from app.services.marketdata import MarketSnapshot
 log = logging.getLogger(__name__)
 
 #: Комиссии по умолчанию, если в БД нет актуальной версии.
-#: Telegram удерживает комиссию с продавца при перепродаже подарка.
+#:
+#: Это оценка, а не факт: площадки меняют тарифы и проводят акции.
+#: После первой реальной продажи сверьте фактическое зачисление и
+#: заведите новую версию в таблице fee_schedules — иначе весь расчёт
+#: ROI будет смещён (см. docs/OPERATIONS.md).
 DEFAULT_FEES: dict[Market, dict[str, Decimal]] = {
     Market.TELEGRAM: {
         "sale_fee": Decimal("0.20"),
@@ -30,11 +34,14 @@ DEFAULT_FEES: dict[Market, dict[str, Decimal]] = {
         "royalty": Decimal("0"),
         "network_fee": Decimal("0"),
     },
+    # Portals берёт около 2,5% с продавца — заметно меньше Telegram.
+    # Площадка периодически объявляет нулевую комиссию, поэтому
+    # значение стоит сверить по первой же реальной продаже.
     Market.PORTALS: {
-        "sale_fee": Decimal("0.05"),
+        "sale_fee": Decimal("0.025"),
         "buy_fee": Decimal("0"),
         "royalty": Decimal("0"),
-        "network_fee": Decimal("0.1"),
+        "network_fee": Decimal("0.05"),
     },
     Market.MRKT: {
         "sale_fee": Decimal("0.05"),

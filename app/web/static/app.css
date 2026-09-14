@@ -173,3 +173,26 @@ table.settings .err { color: var(--neg); font-size: 12.5px; margin-top: 5px; }
 .account-actions button { padding: 6px 12px; font-size: 13px; }
 button.danger-btn { background: var(--neg); }
 .spent { font-size: 13px; }
+
+/* --- статус сканера --- */
+.scan {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); padding: 14px 16px; margin-bottom: 20px;
+}
+.scan.stale { border-color: var(--warn); }
+.scan-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.scan-stats { display: flex; gap: 30px; margin: 12px 0; flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { font-size: 20px; font-weight: 700; }
+.scan-markets { font-size: 13px; margin-top: 6px; }
+.chip {
+  display: inline-block; background: #22262f; color: var(--text);
+  padding: 1px 8px; border-radius: 999px; font-size: 12px; margin-left: 4px;
+}
+.scan-note { font-size: 13px; margin-top: 10px; line-height: 1.6; }
+.scan-note code { background: #22262f; padding: 1px 6px; border-radius: 4px; }
+.scan-reject { margin-top: 12px; }
+table.reject { margin-top: 6px; font-size: 13px; }
+table.reject td { padding: 5px 10px; }
+table.reject td.num { text-align: right; color: var(--muted); width: 60px; }

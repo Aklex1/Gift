@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections import Counter
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -39,6 +40,47 @@ log = logging.getLogger(__name__)
 
 #: Сколько живёт кандидат, прежде чем считать цену устаревшей.
 CANDIDATE_TTL = dt.timedelta(minutes=10)
+
+#: Ключ, под которым хранится отчёт о последнем проходе.
+LAST_SCAN_KEY = "LAST_SCAN_REPORT"
+
+#: Человеческие названия причин отсева — для интерфейса.
+REJECTION_LABELS = {
+    "filters": "не подходит под фильтры стратегии",
+    "price_range": "цена вне коридора стратегии",
+    "positions": "достигнут лимит открытых позиций",
+    "confidence": "мало рыночных данных для оценки",
+    "blockers": "сделка убыточна после комиссий",
+    "roi": "прибыль ниже порога стратегии",
+    "risk": "риск выше допустимого",
+}
+
+
+def save_report(report: dict) -> None:
+    """Сохранить отчёт о проходе, чтобы панель могла его показать."""
+    import json
+
+    from app.services import store
+
+    try:
+        store.set(LAST_SCAN_KEY, json.dumps(report, ensure_ascii=False, default=str))
+    except Exception as exc:  # noqa: BLE001 - отчёт не важнее самого скана
+        log.debug("Не удалось сохранить отчёт скана: %s", exc)
+
+
+def last_report() -> dict | None:
+    """Отчёт о последнем проходе сканера."""
+    import json
+
+    from app.services import store
+
+    raw = store.get(LAST_SCAN_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
 
 
 async def refresh_fx(session: Session) -> Decimal | None:
@@ -186,11 +228,26 @@ async def scan_once() -> dict:
     Returns:
         Сводка: сколько лотов просмотрено и сколько кандидатов создано.
     """
-    report = {"listings": 0, "facts": 0, "candidates": 0, "markets": {}}
+    started = utcnow()
+    report: dict = {
+        "listings": 0,
+        "facts": 0,
+        "candidates": 0,
+        "markets": {},
+        "rejections": {},
+        "strategies": [],
+        "started_at": started.isoformat(timespec="seconds"),
+    }
 
     with session_scope() as session:
         strategies = strategy_service.active_strategies(session)
+        report["strategies"] = [s.name for s in strategies]
         if not strategies:
+            report["note"] = (
+                "нет включённых стратегий — включите на странице «Стратегии» в боте"
+            )
+            report["finished_at"] = utcnow().isoformat(timespec="seconds")
+            save_report(report)
             log.info("Нет включённых стратегий — сканирование пропущено")
             return report
         # Материализуем нужные поля: сессия закроется до асинхронных вызовов.
@@ -227,6 +284,12 @@ async def scan_once() -> dict:
 
     report["listings"] = len(all_listings)
     if not all_listings:
+        report["note"] = (
+            "площадки не вернули ни одного лота — проверьте токены и сеть "
+            "(gift-cli probe)"
+        )
+        report["finished_at"] = utcnow().isoformat(timespec="seconds")
+        save_report(report)
         return report
 
     # --- сохранение лотов ---
@@ -242,13 +305,25 @@ async def scan_once() -> dict:
 
     # --- оценка ---
     created = 0
+    rejections: Counter[str] = Counter()
     for dto in all_listings:
         try:
-            created += await evaluate_listing(dto, plan)
+            made, reasons = await evaluate_listing(dto, plan)
+            created += made
+            rejections.update(reasons)
         except Exception as exc:  # noqa: BLE001 - один лот не роняет скан
             log.exception("Ошибка оценки лота %s: %s", dto.external_id, exc)
 
     report["candidates"] = created
+    report["rejections"] = dict(rejections)
+    report["finished_at"] = utcnow().isoformat(timespec="seconds")
+    if not created and rejections:
+        top = rejections.most_common(1)[0][0]
+        report["note"] = (
+            f"подходящих лотов нет, чаще всего: "
+            f"{REJECTION_LABELS.get(top, top)}"
+        )
+    save_report(report)
     log.info(
         "Скан завершён: лотов %s, фактов %s, кандидатов %s",
         report["listings"],
@@ -258,19 +333,22 @@ async def scan_once() -> dict:
     return report
 
 
-async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
+async def evaluate_listing(
+    dto: ListingDTO, plan: list[dict]
+) -> tuple[int, Counter[str]]:
     """Оценить лот по всем подходящим стратегиям.
 
     Returns:
-        Сколько кандидатов создано.
+        (сколько кандидатов создано, причины отсева)
     """
     from app.models import Strategy
 
     created = 0
+    rejections: Counter[str] = Counter()
     with session_scope() as session:
         price_stars = marketdata.to_stars(session, dto.price, dto.currency)
         if price_stars is None or price_stars <= 0:
-            return 0
+            return (0, rejections)
 
         snapshot = await snapshot_for_listing(session, dto)
         adapter = get_adapter(dto.market)
@@ -285,17 +363,21 @@ async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
 
             ok, reason = strategy_service.matches_filters(strategy, dto)
             if not ok:
+                rejections["filters"] += 1
                 continue
             ok, reason = strategy_service.price_in_range(strategy, price_stars)
             if not ok:
+                rejections["price_range"] += 1
                 continue
             ok, reason = strategy_service.can_open_position(session, strategy)
             if not ok:
+                rejections["positions"] += 1
                 log.debug("Стратегия %s: %s", strategy.name, reason)
                 continue
 
             required = strategy_service.required_confidence(strategy)
             if not marketdata.confidence_at_least(snapshot.confidence, required):
+                rejections["confidence"] += 1
                 continue
 
             result = valuation.evaluate(
@@ -311,10 +393,13 @@ async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
             )
 
             if result.blockers:
+                rejections["blockers"] += 1
                 continue
             if result.net_roi < Decimal(strategy.min_roi):
+                rejections["roi"] += 1
                 continue
             if result.risk_score > strategy.max_risk:
+                rejections["risk"] += 1
                 continue
 
             gift = gifts_service.upsert_gift(session, dto.gift)
@@ -371,7 +456,7 @@ async def evaluate_listing(dto: ListingDTO, plan: list[dict]) -> int:
                 float(result.net_roi) * 100,
                 result.risk_score,
             )
-    return created
+    return (created, rejections)
 
 
 def expire_candidates(session: Session) -> int:

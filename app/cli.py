@@ -197,8 +197,10 @@ async def _accounts() -> int:
             print(f"{account.name}")
             print(f"  Telegram : @{account.tg_username or '—'} "
                   f"(api_id {account.api_id})")
-            print(f"  Stars    : {account.stars_balance if account.stars_balance is not None else '—'}")
-            print(f"  TON      : {account.ton_balance if account.ton_balance is not None else '—'}")
+            from app.services.gifts import format_amount, format_stars
+
+            print(f"  Stars    : {format_stars(account.stars_balance)} ★")
+            print(f"  TON      : {format_amount(account.ton_balance)}")
             if state:
                 print(f"  Состояние: {', '.join(state)}")
             if account.last_error:

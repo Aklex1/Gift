@@ -15,6 +15,14 @@
 
 <div class="cards">
   <div class="card">
+    <span class="label">Баланс Stars</span>
+    <span class="value">{{ fmt(total_stars) }} ★</span>
+  </div>
+  <div class="card">
+    <span class="label">Баланс TON</span>
+    <span class="value">{{ amount(total_ton) }}</span>
+  </div>
+  <div class="card">
     <span class="label">Реализованный PnL</span>
     <span class="value {{ 'pos' if summary.realized_pnl > 0 else ('neg' if summary.realized_pnl < 0 else '') }}">
       {{ fmt(summary.realized_pnl) }} ★
@@ -47,6 +55,26 @@
   </div>
   {% endif %}
 </div>
+
+<h2>Аккаунты</h2>
+<table>
+  <tr><th>Аккаунт</th><th>Stars</th><th>TON</th><th>Состояние</th><th>Обновлено</th></tr>
+  {% for a in accounts %}
+  <tr>
+    <td>{{ a.name }}</td>
+    <td>{{ fmt(a.stars) }} ★</td>
+    <td>{{ amount(a.ton) }}</td>
+    <td>{{ 'готов' if a.authorized else 'вход не выполнен' }}</td>
+    <td class="muted">
+      {{ a.balance_at.strftime('%d.%m %H:%M') if a.balance_at else 'не опрашивалось' }}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">
+    Аккаунтов нет — добавьте на странице «Аккаунты»
+  </td></tr>
+  {% endfor %}
+</table>
 
 <h2>Бюджеты</h2>
 <table>

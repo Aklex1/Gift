@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from sqlalchemy import func
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -95,6 +96,29 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
             .filter(Candidate.state == "pending", Candidate.expires_at > utcnow())
             .count()
         )
+
+        # Балансы торговых аккаунтов: сколько денег реально доступно.
+        from app.services import accounts as accounts_service
+
+        account_rows = []
+        total_stars = Decimal(0)
+        total_ton = Decimal(0)
+        for account in accounts_service.all_accounts(session):
+            if not account.is_active:
+                continue
+            stars = Decimal(account.stars_balance or 0)
+            ton = Decimal(account.ton_balance or 0)
+            total_stars += stars
+            total_ton += ton
+            account_rows.append(
+                {
+                    "name": account.name,
+                    "stars": account.stars_balance,
+                    "ton": account.ton_balance,
+                    "authorized": accounts_service.is_authorized(account),
+                    "balance_at": account.balance_at,
+                }
+            )
         unknown = (
             session.query(Intent).filter(Intent.status == "unknown").count()
         )
@@ -112,7 +136,11 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
             "unknown": unknown,
             "mode": runtime.mode().value,
             "kill_switch": runtime.kill_switch(),
+            "accounts": account_rows,
+            "total_stars": total_stars,
+            "total_ton": total_ton,
             "fmt": gifts_service.format_stars,
+            "amount": gifts_service.format_amount,
         },
     )
 
@@ -121,7 +149,9 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
 async def candidates_page(
     request: Request, _: str = Depends(require_auth)
 ) -> HTMLResponse:
-    """Список активных кандидатов."""
+    """Список активных кандидатов и состояние сканера."""
+    from app.services import scanner
+
     with session_scope() as session:
         rows = (
             session.query(Candidate)
@@ -146,10 +176,34 @@ async def candidates_page(
                     "rationale": row.rationale or {},
                 }
             )
+        # Отброшенные кандидаты объясняют, почему список пуст.
+        recent_states = dict(
+            session.query(Candidate.state, func.count(Candidate.id))
+            .group_by(Candidate.state)
+            .all()
+        )
+
+    report = scanner.last_report()
+    rejections = []
+    if report:
+        for key, count in sorted(
+            (report.get("rejections") or {}).items(), key=lambda kv: -kv[1]
+        ):
+            rejections.append(
+                {"label": scanner.REJECTION_LABELS.get(key, key), "count": count}
+            )
+
     return templates.TemplateResponse(
         request=request,
         name="candidates.html",
-        context={"items": items, "fmt": gifts_service.format_stars},
+        context={
+            "items": items,
+            "report": report,
+            "rejections": rejections,
+            "states": recent_states,
+            "scan_interval": settings.scan_interval_sec,
+            "fmt": gifts_service.format_stars,
+        },
     )
 
 
@@ -226,6 +280,20 @@ async def markets_probe(_: str = Depends(require_auth)) -> JSONResponse:
     """Живая проверка доступности площадок (только чтение)."""
     report = await probe_all()
     return JSONResponse(report)
+
+
+def _balance_totals(session) -> dict:
+    """Суммарные балансы по активным аккаунтам."""
+    from app.services import accounts as accounts_service
+
+    stars = Decimal(0)
+    ton = Decimal(0)
+    for account in accounts_service.all_accounts(session):
+        if not account.is_active:
+            continue
+        stars += Decimal(account.stars_balance or 0)
+        ton += Decimal(account.ton_balance or 0)
+    return {"stars": str(stars), "ton": str(ton)}
 
 
 def _render_settings(
@@ -474,7 +542,12 @@ async def accounts_page(
     return templates.TemplateResponse(
         request=request,
         name="accounts.html",
-        context={"accounts": rows, "saved": saved, "fmt": gifts_service.format_stars},
+        context={
+            "accounts": rows,
+            "saved": saved,
+            "fmt": gifts_service.format_stars,
+            "amount": gifts_service.format_amount,
+        },
     )
 
 
@@ -630,6 +703,7 @@ async def api_summary(_: str = Depends(require_auth)) -> JSONResponse:
                 "open_count": summary["open_count"],
                 "realized_pnl": str(summary["realized_pnl"]),
                 "roi": str(summary["roi"]),
+                "balances": _balance_totals(session),
                 "kill_switch": runtime.kill_switch(),
                 "mode": runtime.mode().value,
             }

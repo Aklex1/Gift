@@ -120,3 +120,19 @@ def format_stars(value: Decimal | None) -> str:
     if value is None:
         return "—"
     return f"{Decimal(value):,.0f}".replace(",", " ")
+
+
+def format_amount(value: Decimal | None, places: int = 6) -> str:
+    """Отформатировать произвольную сумму без научной записи.
+
+    Decimal печатает малые числа как ``0E-9`` — в интерфейсе это
+    выглядит ошибкой, хотя означает обычный ноль. Точности в шесть
+    знаков хватает и на доли TON, и на обычные суммы.
+    """
+    if value is None:
+        return "—"
+    value = Decimal(value)
+    if value == 0:
+        return "0"
+    text = f"{value:.{places}f}".rstrip("0").rstrip(".")
+    return text or "0"
