@@ -172,8 +172,10 @@ def effective_mode(strategy: Strategy) -> TradeMode:
     в SAFE, ни одна стратегия не уйдёт в AUTO.
     """
     order = {TradeMode.SAFE: 0, TradeMode.SEMI: 1, TradeMode.AUTO: 2}
+    from app.services import runtime
+
     strategy_mode = strategy.mode
-    global_mode = settings.default_mode
+    global_mode = runtime.mode()
     return strategy_mode if order[strategy_mode] <= order[global_mode] else global_mode
 
 

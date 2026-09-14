@@ -81,11 +81,18 @@ class GiftRef:
 
     @property
     def canonical_key(self) -> str:
-        """Стабильный ключ для схлопывания одного подарка между площадками."""
-        if self.slug:
-            return self.slug.lower()
+        """Стабильный ключ для схлопывания одного подарка между площадками.
+
+        Пара «коллекция + номер» универсальна: один и тот же подарок
+        имеет её на любой площадке. Поэтому она важнее ``slug`` —
+        у Portals там лежит внутренний UUID, по которому подарок с
+        Telegram не сопоставился бы, и кросс-рыночное сравнение цен
+        не работало бы вовсе.
+        """
         if self.number is not None:
             return f"{self.collection.lower().replace(' ', '')}#{self.number}"
+        if self.slug:
+            return self.slug.lower()
         traits = "|".join(
             str(x or "") for x in (self.model, self.backdrop, self.symbol)
         )
@@ -175,16 +182,15 @@ class MarketAdapter(abc.ABC):
 
         SUPPORTED (официальный API) — всегда. EXPERIMENTAL (приватный
         API без SLA) — только если владелец явно снял этот запрет
-        флагом ALLOW_EXPERIMENTAL_AUTO, приняв риск блокировки
-        площадки и потери средств.
+        в панели, приняв риск блокировки площадки и потери средств.
         """
-        from app.config import settings
+        from app.services import runtime
 
         status = self.status_of(capability)
         if status is CapabilityStatus.SUPPORTED:
             return True
         if status is CapabilityStatus.EXPERIMENTAL:
-            return bool(settings.allow_experimental_auto)
+            return runtime.allow_experimental_auto()
         return False
 
     def _require(self, capability: Capability) -> None:

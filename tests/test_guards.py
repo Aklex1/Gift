@@ -18,9 +18,13 @@ from app.services.executor import ExecutionBlocked, guard
 @pytest.fixture(autouse=True)
 def restore_settings():
     """Вернуть настройки после каждого теста."""
-    saved = (settings.kill_switch, settings.auto_whitelist)
+    from app.services import store
+
+    saved = (settings.kill_switch, settings.telegram_enable_write)
+    store.invalidate()
     yield
-    settings.kill_switch, settings.auto_whitelist = saved
+    settings.kill_switch, settings.telegram_enable_write = saved
+    store.invalidate()
 
 
 def test_kill_switch_blocks_everything():
@@ -37,10 +41,18 @@ def test_safe_mode_blocks_writes():
         guard(TradeMode.SAFE, Market.TELEGRAM, Capability.BUY)
 
 
-def test_semi_mode_allows_official_market():
-    """SEMI разрешает покупку на официальном API."""
+def test_semi_mode_allows_enabled_official_market(monkeypatch):
+    """SEMI разрешает покупку на включённом официальном API."""
     settings.kill_switch = False
+    monkeypatch.setattr(settings, "telegram_enable_write", True)
     guard(TradeMode.SEMI, Market.TELEGRAM, Capability.BUY)
+
+
+def test_market_off_by_default_blocks_trade():
+    """Пока площадка не включена, торговли нет даже в SEMI."""
+    settings.kill_switch = False
+    with pytest.raises(ExecutionBlocked, match="боевой режим выключен"):
+        guard(TradeMode.SEMI, Market.TELEGRAM, Capability.BUY)
 
 
 def test_private_market_buy_blocked_by_default():
@@ -69,26 +81,27 @@ def test_write_flag_alone_does_not_open_buy(monkeypatch):
         registry._ADAPTERS.clear()
 
 
-def test_auto_requires_whitelist():
-    """AUTO не работает без явного белого списка."""
+def test_auto_requires_market_enabled():
+    """AUTO не работает на выключенной площадке."""
     settings.kill_switch = False
-    settings.auto_whitelist = ""
-    with pytest.raises(ExecutionBlocked, match="AUTO_WHITELIST"):
+    with pytest.raises(ExecutionBlocked, match="боевой режим выключен"):
         guard(TradeMode.AUTO, Market.TELEGRAM, Capability.BUY)
 
 
-def test_auto_allowed_for_whitelisted_official_market():
-    """AUTO разрешён только для официального API из белого списка."""
+def test_auto_allowed_for_enabled_official_market(monkeypatch):
+    """AUTO разрешён на включённом официальном API."""
     settings.kill_switch = False
-    settings.auto_whitelist = "telegram"
+    monkeypatch.setattr(settings, "telegram_enable_write", True)
     guard(TradeMode.AUTO, Market.TELEGRAM, Capability.BUY)
 
 
-def test_auto_never_allowed_for_private_api():
-    """Приватный API нельзя пустить в AUTO даже через белый список."""
+def test_auto_never_allowed_for_private_api_by_default(monkeypatch):
+    """Приватный API не уходит в AUTO без отдельного разрешения."""
     settings.kill_switch = False
-    settings.auto_whitelist = "portals,mrkt,tonnel"
-    for market in (Market.PORTALS, Market.MRKT, Market.TONNEL):
+    monkeypatch.setattr(settings, "portals_enable_write", True)
+    monkeypatch.setattr(settings, "mrkt_enable_write", True)
+    monkeypatch.setattr(settings, "allow_experimental_auto", False)
+    for market in (Market.PORTALS, Market.MRKT):
         with pytest.raises(ExecutionBlocked):
             guard(TradeMode.AUTO, market, Capability.BUY)
 

@@ -45,7 +45,6 @@ def restore_settings():
         settings.portals_enable_write,
         settings.portals_auth,
         settings.allow_experimental_auto,
-        settings.auto_whitelist,
         settings.portals_max_trade_ton,
     )
     settings.kill_switch = False
@@ -55,7 +54,6 @@ def restore_settings():
         settings.portals_enable_write,
         settings.portals_auth,
         settings.allow_experimental_auto,
-        settings.auto_whitelist,
         settings.portals_max_trade_ton,
     ) = saved
 
@@ -218,9 +216,8 @@ def test_auto_still_blocked_without_experimental_flag(contracts_dir):
     )
     settings.portals_enable_write = True
     settings.portals_auth = "token"
-    settings.auto_whitelist = "portals"
     settings.allow_experimental_auto = False
-    with pytest.raises(ExecutionBlocked, match="ALLOW_EXPERIMENTAL_AUTO"):
+    with pytest.raises(ExecutionBlocked, match="автономн"):
         guard(TradeMode.AUTO, Market.PORTALS, Capability.BUY)
 
 
@@ -232,7 +229,6 @@ def test_auto_allowed_with_all_three_switches(contracts_dir):
     )
     settings.portals_enable_write = True
     settings.portals_auth = "token"
-    settings.auto_whitelist = "portals"
     settings.allow_experimental_auto = True
     guard(TradeMode.AUTO, Market.PORTALS, Capability.BUY)
 
@@ -245,7 +241,6 @@ def test_kill_switch_overrides_battle_mode(contracts_dir):
     )
     settings.portals_enable_write = True
     settings.portals_auth = "token"
-    settings.auto_whitelist = "portals"
     settings.allow_experimental_auto = True
     settings.kill_switch = True
     with pytest.raises(ExecutionBlocked, match="аварийный стоп|KILL_SWITCH"):
@@ -260,3 +255,35 @@ def test_per_market_cap_is_read_in_native_currency():
     # Для Telegram лимит остаётся в Stars.
     settings.max_trade_stars = 5000
     assert settings.market_trade_cap(Market.TELEGRAM, Currency.STARS) == Decimal(5000)
+
+
+def test_same_gift_collapses_across_markets():
+    """Один подарок на разных площадках даёт один ключ идентичности.
+
+    Без этого кросс-рыночное сравнение цен невозможно: Portals отдаёт
+    внутренний UUID, Telegram — свой slug.
+    """
+    from app.adapters.base import GiftRef
+
+    from_telegram = GiftRef(
+        collection="Lunar Snake",
+        number=125269,
+        slug="lunarsnake-125269",
+        model="Wood Snake",
+    )
+    from_portals = GiftRef(
+        collection="Lunar Snake",
+        number=125269,
+        slug="6b0be2f6-f560-40f0-b298-2ebeaabb622b",
+        model="Wood Snake",
+    )
+    assert from_telegram.canonical_key == from_portals.canonical_key
+    assert from_telegram.canonical_key == "lunarsnake#125269"
+
+
+def test_slug_used_when_number_unknown():
+    """Без номера ключом остаётся slug."""
+    from app.adapters.base import GiftRef
+
+    ref = GiftRef(collection="Some Gift", slug="somegift-42")
+    assert ref.canonical_key == "somegift-42"

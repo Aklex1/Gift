@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     #: Именно эта пара даёт доступ к resale-маркету подарков.
     tg_api_id: int = Field(default=0, alias="TG_API_ID")
     tg_api_hash: str = Field(default="", alias="TG_API_HASH")
+    #: Боевой режим Telegram. Выключен по умолчанию: ни одна площадка
+    #: не торгует, пока владелец не включит её осознанно.
+    telegram_enable_write: bool = Field(default=False, alias="TELEGRAM_ENABLE_WRITE")
+
     #: Имя файла Telethon-сессии внутри data_dir.
     tg_session_name: str = Field(default="trading", alias="TG_SESSION_NAME")
     #: Номер телефона торгового аккаунта (для интерактивного логина через CLI).
@@ -74,8 +78,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Внешние площадки (приватные API — статус experimental)
     # ------------------------------------------------------------------
+    #: Домен площадки менялся: portals-market.com больше не резолвится.
     portals_base_url: str = Field(
-        default="https://portals-market.com/api", alias="PORTALS_BASE_URL"
+        default="https://portals.tg/api", alias="PORTALS_BASE_URL"
     )
     portals_auth: str = Field(default="", alias="PORTALS_AUTH")
     #: Разрешить боевые операции (покупка/продажа) на Portals.

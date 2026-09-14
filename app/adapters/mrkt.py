@@ -33,6 +33,7 @@ from app.adapters.base import (
 )
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
+from app.services import runtime
 from app.services import secrets
 from app.enums import Currency, Market
 
@@ -75,7 +76,7 @@ class MrktAdapter(HttpMarketAdapter):
             ),
         }
         self.load_write_contract(
-            enabled=bool(settings.mrkt_enable_write and has_auth)
+            enabled=bool(runtime.write_enabled(Market.MRKT) and has_auth)
         )
 
     # ------------------------------------------------------------------

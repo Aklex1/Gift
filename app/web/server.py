@@ -99,7 +99,8 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
             session.query(Intent).filter(Intent.status == "unknown").count()
         )
 
-    mode = settings.default_mode
+    from app.services import runtime
+
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -109,8 +110,8 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
             "strategies": strategy_rows,
             "pending": pending,
             "unknown": unknown,
-            "mode": mode.value,
-            "kill_switch": settings.kill_switch,
+            "mode": runtime.mode().value,
+            "kill_switch": runtime.kill_switch(),
             "fmt": gifts_service.format_stars,
         },
     )
@@ -315,6 +316,106 @@ async def settings_test(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(await probe_all())
 
 
+@app.get("/trading", response_class=HTMLResponse)
+async def trading_page(
+    request: Request, saved: int = 0, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Переключатели боевого режима по площадкам."""
+    from app.adapters.base import Capability
+    from app.adapters.registry import get_adapter
+    from app.services import runtime
+
+    state = runtime.snapshot()
+    markets = []
+    for name, item in state["markets"].items():
+        market = item["market"]
+        adapter = get_adapter(market)
+        contract = getattr(adapter, "contract", None)
+        markets.append(
+            {
+                "key": name,
+                "title": {
+                    "telegram": "Telegram — официальный маркет",
+                    "portals": "Portals",
+                    "mrkt": "MRKT",
+                }.get(name, name),
+                "official": adapter.status_of(Capability.BUY).value == "supported",
+                "enabled": item["write_enabled"],
+                "cap": item["trade_cap"],
+                "currency": item["currency"].value,
+                "has_token": bool(getattr(adapter, "auth", None)) or name == "telegram",
+                "operations": contract.described if contract else [],
+            }
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="trading.html",
+        context={
+            "mode": state["mode"].value,
+            "kill_switch": state["kill_switch"],
+            "experimental_auto": state["allow_experimental_auto"],
+            "markets": markets,
+            "saved": saved,
+        },
+    )
+
+
+@app.post("/trading")
+async def trading_save(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Применить изменения предохранителей.
+
+    Каждое изменение пишется в журнал аудита: это те переключатели,
+    что решают, тратятся деньги или нет.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from app.adapters.registry import _ADAPTERS
+    from app.enums import Market, TradeMode
+    from app.services import runtime
+
+    form = await request.form()
+    changed = 0
+
+    raw_mode = str(form.get("mode") or "").strip().lower()
+    if raw_mode:
+        try:
+            new_mode = TradeMode(raw_mode)
+        except ValueError:
+            new_mode = None
+        if new_mode is not None and new_mode is not runtime.mode():
+            runtime.set_mode(new_mode)
+            changed += 1
+
+    wanted_experimental = bool(form.get("experimental_auto"))
+    if wanted_experimental != runtime.allow_experimental_auto():
+        runtime.set_allow_experimental_auto(wanted_experimental)
+        changed += 1
+
+    for market in runtime.TRADABLE:
+        wanted = bool(form.get(f"enable__{market.value}"))
+        if wanted != runtime.write_enabled(market):
+            runtime.set_write_enabled(market, wanted)
+            changed += 1
+
+        raw_cap = str(form.get(f"cap__{market.value}") or "").strip().replace(",", ".")
+        if raw_cap:
+            try:
+                cap = Decimal(raw_cap)
+            except (InvalidOperation, ValueError):
+                continue
+            if cap != (runtime.trade_cap(market) or Decimal(0)):
+                runtime.set_trade_cap(market, cap)
+                changed += 1
+
+    if changed:
+        # Боевой режим влияет на набор возможностей адаптера.
+        _ADAPTERS.clear()
+    return RedirectResponse(f"/trading?saved={changed}", status_code=303)
+
+
 @app.get("/audit", response_class=HTMLResponse)
 async def audit_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
     """Журнал аудита."""
@@ -340,22 +441,22 @@ async def audit_page(request: Request, _: str = Depends(require_auth)) -> HTMLRe
 
 @app.post("/kill")
 async def toggle_kill(_: str = Depends(require_auth)) -> RedirectResponse:
-    """Переключить аварийный стоп."""
-    settings.kill_switch = not settings.kill_switch
-    with session_scope() as session:
-        session.add(
-            AuditLog(
-                actor="web",
-                action="kill_switch",
-                payload={"enabled": settings.kill_switch},
-            )
-        )
+    """Переключить аварийный стоп.
+
+    Значение пишется в общее хранилище, поэтому стоп немедленно
+    действует и в воркере, и в боте.
+    """
+    from app.services import runtime
+
+    runtime.set_kill_switch(not runtime.kill_switch(), actor="web")
     return RedirectResponse("/", status_code=303)
 
 
 @app.get("/api/summary")
 async def api_summary(_: str = Depends(require_auth)) -> JSONResponse:
     """Машинная сводка состояния."""
+    from app.services import runtime
+
     with session_scope() as session:
         summary = portfolio.pnl_summary(session)
         return JSONResponse(
@@ -364,7 +465,7 @@ async def api_summary(_: str = Depends(require_auth)) -> JSONResponse:
                 "open_count": summary["open_count"],
                 "realized_pnl": str(summary["realized_pnl"]),
                 "roi": str(summary["roi"]),
-                "kill_switch": settings.kill_switch,
-                "mode": settings.default_mode.value,
+                "kill_switch": runtime.kill_switch(),
+                "mode": runtime.mode().value,
             }
         )

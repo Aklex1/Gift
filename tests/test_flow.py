@@ -108,6 +108,9 @@ def wired(session, monkeypatch, tmp_path):
 
     settings.kill_switch = False
     settings.max_trade_stars = 0
+    # Боевой режим площадки включается явно — в тестах тоже.
+    monkeypatch.setattr(settings, "telegram_enable_write", True)
+    monkeypatch.setattr("app.services.runtime.store.get", lambda key: None)
     seed_fee_schedules(session)
     return session
 

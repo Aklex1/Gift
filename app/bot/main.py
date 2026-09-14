@@ -24,6 +24,7 @@ from app.enums import Confidence, Market, PositionStatus, TradeMode
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Position, Strategy, utcnow
 from app.services import budget as budget_service
+from app.services import runtime
 from app.services import secrets
 from app.services import executor, portfolio
 from app.services import gifts as gifts_service
@@ -87,11 +88,11 @@ async def cmd_start(message: Message) -> None:
     if not is_owner(message.from_user.id if message.from_user else None):
         await deny(message)
         return
-    mode_value = settings.default_mode.value
+    mode_value = runtime.mode().value
     await message.answer(
         "<b>Gift — торговый бот подарков Telegram</b>\n\n"
         f"Режим: <b>{mode_value.upper()}</b>\n"
-        f"Аварийный стоп: <b>{'ВКЛЮЧЁН' if settings.kill_switch else 'выключен'}</b>\n\n"
+        f"Аварийный стоп: <b>{'ВКЛЮЧЁН' if runtime.kill_switch() else 'выключен'}</b>\n\n"
         "SAFE — только рекомендации.\n"
         "SEMI — покупка после вашего подтверждения.\n"
         "AUTO — автономно, только официальный API Telegram из белого списка.\n\n"
@@ -116,21 +117,13 @@ async def cmd_kill(message: Message) -> None:
     if not is_owner(message.from_user.id if message.from_user else None):
         await deny(message)
         return
-    settings.kill_switch = not settings.kill_switch
-    state = "ВКЛЮЧЁН" if settings.kill_switch else "выключен"
-    with session_scope() as session:
-        session.add(
-            AuditLog(
-                actor=str(message.from_user.id),
-                action="kill_switch",
-                payload={"enabled": settings.kill_switch},
-            )
-        )
+    enabled = not runtime.kill_switch()
+    runtime.set_kill_switch(enabled, actor=str(message.from_user.id))
     await message.answer(
-        f"🛑 Аварийный стоп <b>{state}</b>.\n"
+        f"🛑 Аварийный стоп <b>{'ВКЛЮЧЁН' if enabled else 'выключен'}</b>.\n"
         + (
-            "Все торговые операции заблокированы."
-            if settings.kill_switch
+            "Все торговые операции заблокированы — во всех процессах."
+            if enabled
             else "Торговля снова разрешена в пределах режима и лимитов."
         )
     )
@@ -557,23 +550,23 @@ async def cmd_settings(message: Message) -> None:
     if not is_owner(message.from_user.id if message.from_user else None):
         await deny(message)
         return
-    mode_value = settings.default_mode.value
+    mode_value = runtime.mode().value
     session_state = (
         "авторизована" if settings.session_path.exists() else "НЕ авторизована"
     )
     await message.answer(
         "<b>Настройки</b>\n\n"
         f"Режим: <b>{mode_value.upper()}</b>\n"
-        f"Аварийный стоп: {'ВКЛЮЧЁН' if settings.kill_switch else 'выключен'}\n"
-        f"Лимит на сделку: {settings.max_trade_stars or '—'} Stars\n"
+        f"Аварийный стоп: {'ВКЛЮЧЁН' if runtime.kill_switch() else 'выключен'}\n"
         f"Суточный лимит: {settings.daily_limit_stars or '—'} Stars\n"
         f"Макс. позиций: {settings.max_open_positions}\n"
         f"Мин. ROI: {settings.min_roi * 100:.0f}%\n"
-        f"Белый список AUTO: {', '.join(settings.auto_markets) or '— пуст'}\n\n"
+        f"Боевой режим включён: "
+        f"{', '.join(sorted(runtime.auto_markets())) or '— нигде'}\n\n"
         f"MTProto-сессия: <b>{session_state}</b>\n"
         f"api_id задан: {'да' if settings.tg_api_id else 'НЕТ'}\n\n"
-        "Изменение лимитов — в файле <code>.env</code> на сервере, "
-        "затем перезапуск сервисов."
+        "Режим, лимиты и боевой режим площадок меняются в веб-панели, "
+        "раздел «Торговля» — без перезапуска."
     )
 
 

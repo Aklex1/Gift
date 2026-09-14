@@ -1,4 +1,4 @@
-"""Адаптер Portals (portals.tg / portals-market.com).
+"""Адаптер Portals (portals.tg).
 
 Эндпоинты соответствуют фактическому API мини-приложения:
 
@@ -34,7 +34,7 @@ from app.adapters.base import (
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
 from app.enums import Currency, Market
-from app.services import secrets
+from app.services import runtime, secrets
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class PortalsAdapter(HttpMarketAdapter):
             ),
         }
         self.load_write_contract(
-            enabled=bool(settings.portals_enable_write and has_auth),
+            enabled=bool(runtime.write_enabled(Market.PORTALS) and has_auth),
             defaults=DEFAULT_WRITE_CONTRACT,
         )
 
@@ -101,8 +101,8 @@ class PortalsAdapter(HttpMarketAdapter):
         headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-            "Origin": "https://portals-market.com",
-            "Referer": "https://portals-market.com/",
+            "Origin": "https://portals.tg",
+            "Referer": "https://portals.tg/",
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"

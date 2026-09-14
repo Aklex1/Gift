@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Торговля — Gift{% endblock %}
+{% block content %}
+<h1>Торговля</h1>
+
+{% if saved %}
+<div class="banner ok"><div>Применено изменений: <b>{{ saved }}</b>.
+  Действует сразу во всех процессах — бот, воркер и панель.</div></div>
+{% endif %}
+
+{% if kill_switch %}
+<div class="banner danger">
+  <div>🛑 <b>Аварийный стоп включён.</b> Ни одна торговая операция не пройдёт,
+    какие бы переключатели ниже ни стояли.</div>
+  <form method="post" action="/kill"><button type="submit">Снять стоп</button></form>
+</div>
+{% endif %}
+
+<form method="post" action="/trading">
+
+  <h2>Режим</h2>
+  <div class="modes">
+    {% for key, title, note in [
+        ('safe', 'SAFE', 'Только находит и показывает. Ни одной покупки.'),
+        ('semi', 'SEMI', 'Покупает после вашего подтверждения в боте.'),
+        ('auto', 'AUTO', 'Покупает сам, в пределах лимитов ниже.')] %}
+    <label class="mode {{ 'on' if mode == key }}">
+      <input type="radio" name="mode" value="{{ key }}" {{ 'checked' if mode == key }}>
+      <span class="tag {{ key }}">{{ title }}</span>
+      <span class="muted">{{ note }}</span>
+    </label>
+    {% endfor %}
+  </div>
+
+  <h2>Площадки</h2>
+  <p class="muted">
+    Каждая площадка включается отдельно. Пока переключатель выключен,
+    бот только читает цены и ничего не покупает.
+  </p>
+
+  {% for m in markets %}
+  <div class="market {{ 'on' if m.enabled }}">
+    <div class="market-head">
+      <label class="switch">
+        <input type="checkbox" name="enable__{{ m.key }}" {{ 'checked' if m.enabled }}>
+        <b>{{ m.title }}</b>
+      </label>
+      {% if m.official %}
+        <span class="badge green">официальный API</span>
+      {% else %}
+        <span class="badge yellow">приватный API, без гарантий</span>
+      {% endif %}
+    </div>
+
+    <div class="market-body">
+      <label class="cap">
+        Лимит одной сделки
+        <input type="text" name="cap__{{ m.key }}" inputmode="decimal"
+               value="{{ m.cap if m.cap else '' }}" placeholder="не задан">
+        <span class="unit">{{ m.currency }}</span>
+      </label>
+
+      <div class="market-state muted">
+        {% if not m.has_token %}
+          <span class="warn-text">нет токена — задайте в разделе «Настройки»</span>
+        {% elif m.operations %}
+          операции: {{ m.operations|join(', ') }}
+        {% else %}
+          боевые операции не настроены
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  <h2>Автономный режим для приватных площадок</h2>
+  <label class="switch danger-switch">
+    <input type="checkbox" name="experimental_auto" {{ 'checked' if experimental_auto }}>
+    <b>Разрешить AUTO на Portals и MRKT</b>
+  </label>
+  <p class="muted">
+    У этих площадок нет публичного API и обязательств по доступности:
+    эндпоинт может смениться без предупреждения, а аккаунт — быть
+    заблокирован. В режиме AUTO между такой ошибкой и вашими деньгами
+    не будет человека. Включайте только после серии успешных сделок
+    с подтверждением.
+  </p>
+
+  <div class="actions">
+    <button type="submit">Применить</button>
+  </div>
+</form>
+
+<h2>Порядок проверки перед первой сделкой</h2>
+<ol class="checklist muted">
+  <li>Токен площадки задан в разделе «Настройки».</li>
+  <li>На сервере: <code>gift-cli contract {{ markets[1].key if markets|length > 1 else 'portals' }}</code> — площадка готова.</li>
+  <li>Лимит сделки выставлен заведомо ниже баланса.</li>
+  <li>Режим <b>SEMI</b>, первая покупка подтверждена вручную и проверена на площадке.</li>
+</ol>
+{% endblock %}

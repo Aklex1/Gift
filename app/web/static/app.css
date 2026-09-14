@@ -112,3 +112,42 @@ button.secondary { background: #2a2f3a; color: var(--text); }
 }
 table.settings input.invalid { border-color: var(--neg); }
 table.settings .err { color: var(--neg); font-size: 12.5px; margin-top: 5px; }
+
+/* --- страница торговли --- */
+.modes { display: flex; flex-direction: column; gap: 8px; }
+.mode {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel);
+}
+.mode.on { border-color: var(--accent); }
+.mode input { accent-color: var(--accent); }
+.market {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); padding: 14px 16px; margin-bottom: 10px;
+}
+.market.on { border-color: var(--pos); }
+.market-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.market-body {
+  display: flex; align-items: center; gap: 20px;
+  margin-top: 10px; flex-wrap: wrap;
+}
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.switch input { width: 18px; height: 18px; accent-color: var(--pos); }
+.danger-switch input { accent-color: var(--warn); }
+.badge {
+  font-size: 12px; padding: 2px 9px; border-radius: 999px; font-weight: 600;
+}
+.badge.green { background: #16261e; color: var(--pos); }
+.badge.yellow { background: #3a2a12; color: var(--warn); }
+.cap { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+.cap input {
+  width: 120px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: #11141a; color: var(--text);
+  font-size: 14px; font-family: inherit;
+}
+.cap .unit { color: var(--muted); font-size: 13px; }
+.market-state { font-size: 13px; }
+.warn-text { color: var(--warn); }
+.checklist { padding-left: 20px; line-height: 1.9; }
+.checklist code { background: #22262f; padding: 1px 6px; border-radius: 4px; }

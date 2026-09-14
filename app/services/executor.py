@@ -42,6 +42,7 @@ from app.enums import (
 )
 from app.models import AuditLog, Candidate, Gift, Intent, Position, Strategy, Transaction, utcnow
 from app.services import budget as budget_service
+from app.services import runtime
 from app.services import saga
 from app.services import strategy as strategy_service
 
@@ -61,9 +62,9 @@ def check_kill_switch() -> None:
     Raises:
         ExecutionBlocked: если kill switch включён.
     """
-    if settings.kill_switch:
+    if runtime.kill_switch():
         raise ExecutionBlocked(
-            "Активен аварийный стоп (KILL_SWITCH): все торговые операции запрещены"
+            "Активен аварийный стоп: все торговые операции запрещены"
         )
 
 
@@ -78,22 +79,32 @@ def check_auto_allowed(market: Market, capability: Capability) -> None:
         raise ExecutionBlocked(
             f"{market.value}: операция {capability.value} не разрешена "
             f"в автономном режиме (статус {adapter.status_of(capability).value}; "
-            f"для приватных API нужен ALLOW_EXPERIMENTAL_AUTO=true)"
+            f"для приватных API нужно разрешить автономный режим в панели)"
         )
-    if market.value not in settings.auto_markets:
+    if market.value not in runtime.auto_markets():
         raise ExecutionBlocked(
-            f"{market.value} не входит в белый список AUTO_WHITELIST"
+            f"{market.value}: боевой режим выключен, автономная торговля невозможна"
         )
 
 
 def guard(mode: TradeMode, market: Market, capability: Capability) -> None:
-    """Полный набор проверок перед write-вызовом."""
+    """Полный набор проверок перед write-вызовом.
+
+    Порядок от общего к частному, чтобы сообщение называло настоящую
+    причину: сначала глобальные предохранители, затем конкретная
+    площадка и операция.
+    """
     check_kill_switch()
 
-    if not settings.market_write_enabled(market.value):
+    if mode is TradeMode.SAFE:
+        raise ExecutionBlocked(
+            "Режим SAFE: система только рекомендует, торговые операции запрещены"
+        )
+
+    if not runtime.write_enabled(market):
         raise ExecutionBlocked(
             f"{market.value}: боевой режим выключен "
-            f"({market.value.upper()}_ENABLE_WRITE=false)"
+            f"(включается в панели, раздел «Торговля»)"
         )
 
     adapter = get_adapter(market)
@@ -104,10 +115,6 @@ def guard(mode: TradeMode, market: Market, capability: Capability) -> None:
             f"или нет доступа к площадке)"
         )
 
-    if mode is TradeMode.SAFE:
-        raise ExecutionBlocked(
-            "Режим SAFE: система только рекомендует, торговые операции запрещены"
-        )
     if mode is TradeMode.AUTO:
         check_auto_allowed(market, capability)
 
@@ -168,7 +175,7 @@ async def execute_buy(
         external_id = candidate.listing_external_id
 
         # Предохранитель на сумму сделки в валюте площадки.
-        cap = settings.market_trade_cap(market, native_currency)
+        cap = runtime.trade_cap(market)
         if cap is not None and native_price > cap:
             return {
                 "ok": False,
