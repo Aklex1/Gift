@@ -85,6 +85,12 @@ for unit in bot web worker; do
     render "$APP_DIR/deploy/gift-$unit.service" > "/etc/systemd/system/$APP_NAME-$unit.service"
     chmod 644 "/etc/systemd/system/$APP_NAME-$unit.service"
 done
+
+# Таймер резервного копирования. Копия каждую ночь — единственное, что
+# отделяет случайный `DROP` или падение диска от потери всех токенов.
+render "$APP_DIR/deploy/gift-backup.service" > "/etc/systemd/system/$APP_NAME-backup.service"
+render "$APP_DIR/deploy/gift-backup.timer"   > "/etc/systemd/system/$APP_NAME-backup.timer"
+chmod 644 "/etc/systemd/system/$APP_NAME-backup.service" "/etc/systemd/system/$APP_NAME-backup.timer"
 sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" \
     "$APP_DIR/deploy/gift-cli" > "/usr/local/bin/$APP_NAME-cli"
 chmod 755 "/usr/local/bin/$APP_NAME-cli"

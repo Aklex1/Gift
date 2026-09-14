@@ -61,6 +61,7 @@ NGINX_PORT=8082 WEB_PORT=8092 bash /opt/gift/deploy/install.sh
 **Какие ключи нужны и где их взять — [docs/SETUP.md](docs/SETUP.md).**
 **Чем пополнять кошелёк — [docs/WALLET.md](docs/WALLET.md).**
 **Торговля на Portals и MRKT — [docs/BATTLE_MODE.md](docs/BATTLE_MODE.md).**
+**Копии, восстановление, смена ключа — [docs/BACKUP.md](docs/BACKUP.md).**
 
 ---
 

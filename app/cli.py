@@ -17,6 +17,8 @@
     contract    — работа с боевым контрактом площадки:
                   `contract portals` показывает состояние,
                   `contract portals --template` создаёт заготовку
+    rotate-key  — сменить ключ шифрования секретов, перешифровав базу
+    verify-key  — проверить, что секреты читаются текущим ключом
 """
 
 from __future__ import annotations
@@ -211,14 +213,15 @@ async def _accounts() -> int:
 
 async def _whoami() -> int:
     """Показать текущий торговый аккаунт."""
-    from app.adapters.telegram_gateway import gateway
+    from app.adapters.telegram_gateway import default_gateway
 
-    me = await gateway.me()
+    tg = default_gateway()
+    me = await tg.me()
     print(
-        f"Аккаунт: {getattr(me, 'first_name', '')} "
+        f"Аккаунт {tg.label}: {getattr(me, 'first_name', '')} "
         f"(@{getattr(me, 'username', '—')}, id={getattr(me, 'id', '?')})"
     )
-    await gateway.close()
+    await tg.close()
     return 0
 
 
@@ -594,18 +597,18 @@ def cmd_doctor() -> int:
             "владельцы не заданы — бот не ответит никому "
             "(узнайте свой id командой /id в боте)"
         )
-    from app.adapters.telegram_gateway import gateway
+    from app.adapters.telegram_gateway import default_gateway
 
-    api_id, api_hash = gateway.credentials()
-    if not api_id or not api_hash:
+    tg = default_gateway()
+    if not tg.is_configured():
         problems.append(
             "api_id / api_hash не заданы — поиск подарков работать не будет "
             "(веб-панель → Настройки, либо https://my.telegram.org)"
         )
-    elif not settings.session_path.exists():
+    elif not tg.session_exists():
         problems.append(
-            f"Сессия не создана: {settings.session_path} "
-            "(выполните: gift-cli login)"
+            f"Сессия не создана: {tg.session_path} "
+            f"(выполните: gift-cli login --account {tg.label})"
         )
     if not settings.web_password:
         warnings.append("WEB_PASSWORD не задан — веб-панель отключена")
@@ -637,6 +640,50 @@ def cmd_doctor() -> int:
             "В AUTO_WHITELIST есть площадки, кроме telegram. "
             "Приватные API без SLA не допускаются в автономный режим."
         )
+
+    # Секреты должны читаться текущим ключом. Иначе бот стартует,
+    # но площадки молча отвечают 401 — и причина неочевидна.
+    if settings.secret_key:
+        try:
+            from app.services import keyrotate
+
+            readable = keyrotate.verify(settings.secret_key)
+            if readable["failed"]:
+                problems.append(
+                    f"GIFT_SECRET_KEY не расшифровывает {len(readable['failed'])} "
+                    "секрет(ов): " + ", ".join(readable["failed"][:3])
+                    + ". Верните прежний ключ и смените его через gift-cli rotate-key"
+                )
+            elif readable["ok"]:
+                print(f"✓ Секреты читаются ключом: {readable['ok']} шт.")
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"не удалось проверить секреты: {exc}")
+
+    # Свежесть резервной копии.
+    backups = settings.data_dir / "backups"
+    if not backups.exists():
+        warnings.append(
+            "резервных копий нет. Включите таймер: "
+            "systemctl enable --now gift-backup.timer"
+        )
+    else:
+        made = sorted(d for d in backups.iterdir() if d.is_dir())
+        if not made:
+            warnings.append("каталог бэкапов пуст — снимите копию: deploy/backup.sh")
+        else:
+            import datetime as _dt
+
+            age = _dt.datetime.now() - _dt.datetime.fromtimestamp(
+                made[-1].stat().st_mtime
+            )
+            days = age.days
+            if days >= 3:
+                warnings.append(
+                    f"последняя резервная копия сделана {days} дн. назад "
+                    f"({made[-1].name}) — проверьте gift-backup.timer"
+                )
+            else:
+                print(f"✓ Последняя резервная копия: {made[-1].name}")
 
     for key, (old, _new, why) in OBSOLETE_VALUES.items():
         actual = {
@@ -672,6 +719,94 @@ def cmd_doctor() -> int:
     return 1
 
 
+def cmd_verify_key() -> int:
+    """Проверить, что все секреты в базе читаются текущим ключом."""
+    from app.services import keyrotate
+
+    if not (settings.secret_key or "").strip():
+        print("✗ GIFT_SECRET_KEY не задан", file=sys.stderr)
+        return 1
+
+    result = keyrotate.verify(settings.secret_key)
+    if result["failed"]:
+        print(f"✗ Не читаются текущим ключом ({len(result['failed'])}):")
+        for item in result["failed"]:
+            print(f"    • {item}")
+        print(f"  Читаются: {result['ok']}")
+        print("  Похоже, GIFT_SECRET_KEY заменён без перешифрования базы.")
+        print("  Верните прежний ключ и смените его через: gift-cli rotate-key")
+        return 1
+
+    if result["ok"] == 0:
+        print("• Зашифрованных секретов в базе нет — проверять нечего")
+        return 0
+    print(f"✓ Все секреты читаются текущим ключом ({result['ok']} шт.)")
+    return 0
+
+
+def cmd_rotate_key(new_key: str | None, dry_run: bool) -> int:
+    """Сменить ключ шифрования: перешифровать базу и обновить .env."""
+    from app.config import BASE_DIR
+    from app.services import keyrotate
+
+    env_path = BASE_DIR / ".env"
+    old_key = keyrotate.read_env_key(env_path) or settings.secret_key
+    if not (old_key or "").strip():
+        print("✗ Текущий GIFT_SECRET_KEY не найден ни в .env, ни в окружении",
+              file=sys.stderr)
+        return 1
+
+    # Старый ключ обязан подходить ко всем данным: иначе смена ключа
+    # тихо превратится в потерю части секретов.
+    check = keyrotate.verify(old_key)
+    if check["failed"]:
+        print("✗ Текущий ключ не читает часть секретов — сначала почините это:",
+              file=sys.stderr)
+        for item in check["failed"]:
+            print(f"    • {item}", file=sys.stderr)
+        return 1
+
+    target = (new_key or "").strip() or keyrotate.generate_key()
+    overview = keyrotate.plan(target)
+
+    print("Будет перешифровано:")
+    print(f"  настроек: {len(overview['settings'])}", end="")
+    if overview["settings"]:
+        print(f"  ({', '.join(overview['settings'])})", end="")
+    print()
+    print(f"  аккаунтов: {len(overview['accounts'])}", end="")
+    if overview["accounts"]:
+        print(f"  ({', '.join(overview['accounts'])})", end="")
+    print()
+
+    if dry_run:
+        print("\n• Пробный прогон: ничего не изменено.")
+        print("  Для реальной смены повторите без --dry-run.")
+        return 0
+
+    try:
+        report = keyrotate.rotate(old_key, target, actor="cli")
+    except ValueError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+
+    if keyrotate.write_env_key(env_path, target):
+        print(f"✓ Новый ключ записан в {env_path}")
+    else:
+        print(f"⚠ Не удалось обновить {env_path} — впишите строку вручную:")
+        print(f"    {keyrotate.ENV_KEY}={target}")
+
+    print(
+        f"✓ Перешифровано: настроек {report['settings']}, "
+        f"аккаунтов {report['accounts']}"
+    )
+    print("\nДальше обязательно:")
+    print("  1) сохраните новый ключ вне сервера — без него база бесполезна;")
+    print("  2) перезапустите сервисы, иначе они работают со старым ключом:")
+    print("     systemctl restart gift-web gift-bot gift-worker")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -692,6 +827,8 @@ def main(argv: list[str] | None = None) -> int:
             "contract",
             "env-sync",
             "accounts",
+            "rotate-key",
+            "verify-key",
         ],
     )
     parser.add_argument(
@@ -708,6 +845,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="создать заготовку контракта вместо проверки",
     )
+    parser.add_argument(
+        "--new",
+        dest="new_key",
+        help="новый ключ для rotate-key (по умолчанию генерируется)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="для rotate-key: показать план, ничего не меняя",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "contract":
@@ -723,6 +870,11 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.command in sync_commands:
         return sync_commands[args.command]()
+
+    if args.command == "rotate-key":
+        return cmd_rotate_key(args.new_key, args.dry_run)
+    if args.command == "verify-key":
+        return cmd_verify_key()
 
     if args.command == "login":
         return asyncio.run(_login(args.account))

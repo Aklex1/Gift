@@ -1,0 +1,15 @@
+[Unit]
+Description=__SERVICE_PREFIX__ — резервная копия базы, .env и сессий
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=__APP_DIR__
+Environment=APP_DIR=__APP_DIR__
+Environment=DATA_DIR=__DATA_DIR__
+Environment=APP_USER=__APP_USER__
+ExecStart=/bin/bash __APP_DIR__/deploy/backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=__SERVICE_PREFIX__-backup

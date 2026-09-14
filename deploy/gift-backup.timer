@@ -1,0 +1,11 @@
+[Unit]
+Description=__SERVICE_PREFIX__ — ежедневная резервная копия
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Если сервер был выключен в 03:30 — копия снимется сразу после старта.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

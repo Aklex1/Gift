@@ -153,10 +153,20 @@ for unit in bot web worker; do
     chmod 644 "/etc/systemd/system/$APP_NAME-$unit.service"
 done
 
+# Таймер резервного копирования. Копия каждую ночь — единственное, что
+# отделяет случайный `DROP` или падение диска от потери всех токенов.
+render "$APP_DIR/deploy/gift-backup.service" > "/etc/systemd/system/$APP_NAME-backup.service"
+render "$APP_DIR/deploy/gift-backup.timer"   > "/etc/systemd/system/$APP_NAME-backup.timer"
+chmod 644 "/etc/systemd/system/$APP_NAME-backup.service" "/etc/systemd/system/$APP_NAME-backup.timer"
+
 sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" \
     "$APP_DIR/deploy/gift-cli" > "/usr/local/bin/$APP_NAME-cli"
 chmod 755 "/usr/local/bin/$APP_NAME-cli"
 systemctl daemon-reload
+# Бэкапы включаем сразу: в отличие от торговли, копии нужны
+# с первого дня и ключей не требуют.
+systemctl enable --now "$APP_NAME-backup.timer" >/dev/null 2>&1 \
+    || warn "Не удалось включить таймер бэкапов — запускайте вручную: bash $APP_DIR/deploy/backup.sh"
 
 # ---------------------------------------------------------------------
 if [[ "$SETUP_NGINX" == "1" ]]; then
@@ -221,6 +231,14 @@ cat <<TAIL
 Логи:
     journalctl -u $APP_NAME-bot -f
     journalctl -u $APP_NAME-worker -f
+
+Резервные копии:
+    $APP_NAME-cli verify-key            проверить, что секреты читаются
+    bash $APP_DIR/deploy/backup.sh      снять копию прямо сейчас
+    bash $APP_DIR/deploy/restore.sh ПУТЬ  восстановить из копии
+
+СОХРАНИТЕ ключ шифрования вне сервера — без него копия базы бесполезна:
+    grep GIFT_SECRET_KEY $APP_DIR/.env
 
 Режим по умолчанию — SAFE: бот только показывает находки и ничего
 не покупает, пока вы сами не переключите режим.
