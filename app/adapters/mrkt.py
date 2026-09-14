@@ -101,6 +101,17 @@ class MrktAdapter(HttpMarketAdapter):
         """
         if self.auth and not force:
             return True
+        if not self._init_data or force:
+            # initData либо нет, либо он только что не сработал. Берём
+            # свежий у Telegram: строка живёт часы, и держать её в
+            # настройках вручную — гарантированная остановка торговли.
+            from app.services import webauth
+
+            try:
+                self._init_data = await webauth.fetch_init_data(Market.MRKT)
+                secrets.set_value("MRKT_INIT_DATA", self._init_data, actor="auto")
+            except Exception as exc:  # noqa: BLE001 - остаёмся на старом
+                log.warning("MRKT: не удалось получить initData: %s", exc)
         if not self._init_data:
             return bool(self.auth)
 
@@ -133,6 +144,7 @@ class MrktAdapter(HttpMarketAdapter):
             return False
 
         self.auth = str(token)
+        secrets.set_value("MRKT_AUTH", self.auth, actor="auto")
         # Пересоздаём клиент, чтобы заголовки обновились.
         await self.close()
         log.info("MRKT: токен получен")

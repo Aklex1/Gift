@@ -28,6 +28,37 @@
   </div>
 </div>
 
+<h2>Токены площадок</h2>
+<p class="muted">
+  Токен площадки — это не постоянный ключ, а строка мини-приложения: она
+  живёт часы. Бот открывает мини-приложение от имени торгового аккаунта и
+  обновляет её сам каждые {{ token_max_age_h }} ч. Вписывать токены руками
+  нужно, только если продление не работает.
+</p>
+<table class="settings">
+  {% for token in tokens %}
+  <tr>
+    <td class="skey">{{ token.market }}</td>
+    <td>
+      {% if token.age_min is none %}
+        <span class="muted">токена нет или в нём не указано время выдачи</span>
+      {% else %}
+        обновлён {{ token.age_min }} мин. назад
+      {% endif %}
+      {% if token.stale %}
+        <b class="danger">— требует продления</b>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<div class="actions">
+  <button type="button" class="secondary" onclick="renewTokens()">
+    Продлить токены сейчас
+  </button>
+</div>
+<pre id="renew-result" hidden></pre>
+
 <form method="post" action="/settings">
   {% for group, items in groups.items() %}
   <h2>{{ group }}</h2>
@@ -89,6 +120,22 @@
 </p>
 
 <script>
+async function renewTokens() {
+  const out = document.getElementById('renew-result');
+  out.hidden = false;
+  out.textContent = 'Открываю мини-приложения площадок…';
+  try {
+    const r = await fetch('/settings/renew-tokens', {method: 'POST'});
+    const data = await r.json();
+    out.textContent = data.reports.map(
+      x => (x.ok ? '✓ ' : '✗ ') + x.market + ': ' + x.detail
+    ).join('\n');
+    if (data.reports.every(x => x.ok)) setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    out.textContent = 'Ошибка продления: ' + e;
+  }
+}
+
 async function testMarkets() {
   const out = document.getElementById('test-result');
   out.hidden = false;

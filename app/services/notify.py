@@ -47,10 +47,13 @@ KINDS: dict[str, str] = {
     "scan": "сканер не работает",
     "balance": "заканчиваются средства",
     "trade": "совершена сделка",
+    "token": "не удалось продлить токен площадки",
 }
 
 #: Виды, включённые по умолчанию.
-DEFAULT_ENABLED = {"limit", "flood", "market", "stale", "unknown", "scan", "trade"}
+DEFAULT_ENABLED = {
+    "limit", "flood", "market", "stale", "unknown", "scan", "trade", "token",
+}
 
 
 def enabled_kinds() -> set[str]:

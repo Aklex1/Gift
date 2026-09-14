@@ -19,6 +19,7 @@
                   `contract portals --template` создаёт заготовку
     rotate-key  — сменить ключ шифрования секретов, перешифровав базу
     verify-key  — проверить, что секреты читаются текущим ключом
+    renew-tokens— продлить токены площадок через мини-приложения
 """
 
 from __future__ import annotations
@@ -719,6 +720,28 @@ def cmd_doctor() -> int:
     return 1
 
 
+async def _renew_tokens() -> int:
+    """Продлить токены площадок прямо сейчас."""
+    from app.services import webauth
+
+    reports = await webauth.renew_all(force=True)
+    failed = 0
+    for report in reports:
+        if report["ok"]:
+            print(f"✓ {report['market']}: {report['detail']}")
+        else:
+            failed += 1
+            print(f"✗ {report['market']}: {report['detail']}")
+
+    if failed:
+        print(
+            "\nПродление идёт через мини-приложение от имени торгового "
+            "аккаунта.\nЕсли не работает — проверьте вход (gift-cli whoami) "
+            "и адрес\nмини-приложения (настройки PORTALS_MINIAPP / MRKT_MINIAPP)."
+        )
+    return 1 if failed == len(reports) else 0
+
+
 def cmd_verify_key() -> int:
     """Проверить, что все секреты в базе читаются текущим ключом."""
     from app.services import keyrotate
@@ -829,6 +852,7 @@ def main(argv: list[str] | None = None) -> int:
             "accounts",
             "rotate-key",
             "verify-key",
+            "renew-tokens",
         ],
     )
     parser.add_argument(
@@ -886,6 +910,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe": _probe,
         "scan": _scan,
         "inventory": _inventory,
+        "renew-tokens": _renew_tokens,
     }
     return asyncio.run(async_commands[args.command]())
 

@@ -118,6 +118,42 @@ async def task_alerts() -> None:
     await _guarded("alerts", run)
 
 
+async def task_tokens() -> None:
+    """Продлить токены площадок до того, как они протухнут.
+
+    Токен площадки — это initData мини-приложения, он живёт часы.
+    Раньше протухший токен означал остановку торговли до тех пор, пока
+    человек не принесёт новую строку из DevTools.
+    """
+
+    async def run() -> None:
+        from app.services import notify, webauth
+
+        for report in await webauth.renew_all():
+            if report.get("skipped"):
+                continue
+            market = report["market"]
+            if report["ok"]:
+                log.info("Токен %s: %s", market, report["detail"])
+                await notify.resolved(
+                    "token", market, f"Токен {market} снова продлевается."
+                )
+                continue
+
+            log.warning("Токен %s: %s", market, report["detail"])
+            # Молчать нельзя: без токена площадка выпадает из торговли,
+            # и заметить это по пустым результатам сканера трудно.
+            await notify.alert(
+                "token",
+                market,
+                f"Не удалось продлить токен {market}: {report['detail']}\n"
+                f"Торговля на этой площадке остановится, когда истечёт "
+                f"текущий токен. Впишите его вручную в «Настройки».",
+            )
+
+    await _guarded("tokens", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -154,11 +190,16 @@ async def main() -> None:
     scheduler.add_job(task_balances, "interval", seconds=300, id="balances")
     scheduler.add_job(task_fx, "interval", seconds=900, id="fx")
     scheduler.add_job(task_alerts, "interval", seconds=300, id="alerts")
+    # Проверяем возраст токенов чаще, чем они живут: сама проверка
+    # дешёвая, запрос к Telegram уходит только при реальной надобности.
+    scheduler.add_job(task_tokens, "interval", seconds=1800, id="tokens")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     scheduler.start()
 
     # Курсы нужны сразу: без них первые же расчёты будут приблизительными.
     await task_fx()
+    # И токены: стартовать с протухшим — значит потерять первые минуты.
+    await task_tokens()
 
     log.info(
         "Воркеры запущены: скан %s c, репрайс %s c, сверка %s c",

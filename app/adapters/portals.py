@@ -60,6 +60,10 @@ DEFAULT_WRITE_CONTRACT = {
 }
 
 
+#: Минимум между попытками продлить токен после 401.
+RENEW_COOLDOWN_SEC = 120.0
+
+
 class PortalsAdapter(HttpMarketAdapter):
     """Portals: чтение каталога и, по явному разрешению, торговля."""
 
@@ -96,8 +100,43 @@ class PortalsAdapter(HttpMarketAdapter):
         )
         #: Кэш floor по атрибутам: коллекция -> (когда, значения).
         self._floor_cache: dict[str, tuple[dt.datetime, dict]] = {}
+        #: Когда последний раз продлевали токен. Адаптер живёт долго,
+        #: поэтому «продлевали уже» должно истекать: иначе одна неудача
+        #: навсегда выключила бы продление в этом процессе.
+        self._renewed_at = 0.0
 
     # ------------------------------------------------------------------
+    async def request(self, method: str, path: str, **kwargs):  # type: ignore[override]
+        """Запрос с однократным продлением токена при 401/403.
+
+        Токен Portals — initData мини-приложения, он живёт часы. Раньше
+        его смерть означала остановку торговли до ручного вмешательства;
+        теперь бот открывает мини-приложение сам и повторяет запрос.
+        """
+        import time
+
+        from app.adapters.base import AuthRequired
+
+        try:
+            return await super().request(method, path, **kwargs)
+        except AuthRequired:
+            # Пауза между попытками продления: без неё поток отказов
+            # превратился бы в поток запросов к Telegram и FloodWait.
+            if time.monotonic() - self._renewed_at < RENEW_COOLDOWN_SEC:
+                raise
+            self._renewed_at = time.monotonic()
+
+            from app.services import webauth
+
+            report = await webauth.renew(Market.PORTALS)
+            if not report["ok"]:
+                raise
+            self.auth = secrets.resolve("PORTALS_AUTH", settings.portals_auth)
+            # Клиент держит старый заголовок — пересоздаём.
+            await self.close()
+            log.info("Portals: токен продлён, повторяю %s %s", method, path)
+            return await super().request(method, path, **kwargs)
+
     def _headers(self) -> dict[str, str]:
         """Portals отвергает запросы без Origin и Referer своего домена."""
         headers = {

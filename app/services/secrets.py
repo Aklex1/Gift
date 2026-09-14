@@ -142,18 +142,41 @@ FIELDS: tuple[SecretField, ...] = (
     SecretField(
         key="PORTALS_AUTH",
         title="Portals: Authorization",
-        hint="Telegram Web → мини-приложение Portals → F12 → Network → "
-             "заголовок Authorization целиком.",
+        hint="Можно не заполнять: бот сам открывает мини-приложение от "
+             "имени торгового аккаунта и обновляет эту строку каждые "
+             "6 часов. Вписывать вручную нужно, только если "
+             "автопродление не работает (Telegram Web → Portals → F12 → "
+             "Network → заголовок Authorization целиком).",
         group="Площадки",
         placeholder="tma query_id=AAH...",
     ),
     SecretField(
+        key="PORTALS_MINIAPP",
+        title="Portals: адрес мини-приложения",
+        hint="Для автопродления токена, в формате бот:короткое_имя. "
+             "По умолчанию portals:market — меняйте, только если "
+             "площадка переехала и продление перестало работать.",
+        secret=False,
+        group="Площадки",
+        placeholder="portals:market",
+    ),
+    SecretField(
         key="MRKT_INIT_DATA",
         title="MRKT: initData",
-        hint="Поле data из запроса /auth мини-приложения MRKT. "
-             "Бот сам обменяет его на токен и обновит по истечении.",
+        hint="Тоже обновляется автоматически. Бот меняет initData на "
+             "токен сам; вручную заполняют только при сбое "
+             "автопродления (поле data из запроса /auth мини-приложения).",
         group="Площадки",
         placeholder="query_id=AAH...&user=%7B%22id%22...",
+    ),
+    SecretField(
+        key="MRKT_MINIAPP",
+        title="MRKT: адрес мини-приложения",
+        hint="Для автопродления токена, в формате бот:короткое_имя. "
+             "По умолчанию mrkt:app.",
+        secret=False,
+        group="Площадки",
+        placeholder="mrkt:app",
     ),
     SecretField(
         key="MRKT_AUTH",

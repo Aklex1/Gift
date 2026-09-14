@@ -329,6 +329,20 @@ def _render_settings(
         )
 
     session_ok = settings.session_path.exists()
+
+    from app.services import webauth
+
+    tokens = []
+    for market in webauth.MINIAPPS:
+        age = webauth.age_seconds(market)
+        tokens.append(
+            {
+                "market": market.value,
+                "age_min": None if age is None else age // 60,
+                "stale": age is None or age > webauth.MAX_AGE_SEC,
+            }
+        )
+
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
@@ -338,6 +352,8 @@ def _render_settings(
             "errors": errors or {},
             "session_ok": session_ok,
             "session_path": str(settings.session_path),
+            "tokens": tokens,
+            "token_max_age_h": webauth.MAX_AGE_SEC // 3600,
         },
     )
 
@@ -401,6 +417,18 @@ async def settings_test(_: str = Depends(require_auth)) -> JSONResponse:
 
     _ADAPTERS.clear()
     return JSONResponse(await probe_all())
+
+
+@app.post("/settings/renew-tokens")
+async def settings_renew_tokens(_: str = Depends(require_auth)) -> JSONResponse:
+    """Продлить токены площадок через мини-приложения Telegram."""
+    from app.adapters.registry import _ADAPTERS
+    from app.services import webauth
+
+    reports = await webauth.renew_all(force=True)
+    # Адаптеры держат старый токен в заголовках — пересоздаём.
+    _ADAPTERS.clear()
+    return JSONResponse({"reports": reports})
 
 
 @app.get("/trading", response_class=HTMLResponse)
