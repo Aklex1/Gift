@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from sqlalchemy.orm import Session
 
@@ -62,6 +62,26 @@ DEFAULT_FEES: dict[Market, dict[str, Decimal]] = {
         "network_fee": Decimal("0.1"),
     },
 }
+
+
+#: Шаг цены по валютам. Stars целые, TON торгуется с сотыми:
+#: округление до целого раздувало цену лота почти на четверть.
+PRICE_STEP: dict[Currency, Decimal] = {
+    Currency.STARS: Decimal("1"),
+    Currency.TON: Decimal("0.01"),
+    Currency.USD: Decimal("0.01"),
+    Currency.RUB: Decimal("0.01"),
+}
+
+
+def round_price(value: Decimal, currency: Currency) -> Decimal:
+    """Округлить цену к шагу, принятому на площадке.
+
+    Округление вниз: лучше выставить чуть дешевле и продать, чем
+    случайно задрать цену выше рынка.
+    """
+    step = PRICE_STEP.get(currency, Decimal("0.01"))
+    return (Decimal(value) / step).to_integral_value(rounding=ROUND_DOWN) * step
 
 
 @dataclass(slots=True)
@@ -324,6 +344,33 @@ def evaluate(
     )
 
 
+def break_even_price(
+    session: Session, *, market: Market, cost_basis: Decimal
+) -> Decimal:
+    """Цена, при которой после всех комиссий вернётся себестоимость."""
+    fees = get_fees(session, market)
+    rate = Decimal(1) - fees.total_sale_rate
+    if rate <= 0:
+        return cost_basis
+    return (cost_basis + fees.network_fee) / rate
+
+
+def price_floor(
+    session: Session,
+    *,
+    market: Market,
+    cost_basis: Decimal,
+    floor_ratio: Decimal,
+    currency: Currency = Currency.STARS,
+) -> Decimal:
+    """Нижняя граница цены: безубыточность плюс минимальная маржа.
+
+    Ниже этой цены репрайсер не опускается никогда.
+    """
+    minimum = break_even_price(session, market=market, cost_basis=cost_basis)
+    return round_price(minimum * floor_ratio, currency)
+
+
 def suggested_list_price(
     session: Session,
     *,
@@ -332,28 +379,35 @@ def suggested_list_price(
     snapshot: MarketSnapshot,
     markup: Decimal,
     floor_ratio: Decimal,
+    currency: Currency = Currency.STARS,
 ) -> Decimal:
-    """Подобрать цену выставления.
+    """Подобрать стартовую цену выставления.
 
-    Цена не опускается ниже точки безубыточности с учётом комиссий,
-    умноженной на ``floor_ratio`` — минимальную желаемую маржу.
+    Логика лестницы: начинаем с желаемой наценки над рыночной ценой,
+    затем репрайсер шагами снижает цену. Ниже точки безубыточности,
+    умноженной на ``floor_ratio``, цена не опускается никогда.
+
+    Если наценка не задана, встаём чуть ниже текущего floor — так лот
+    продаётся быстрее.
     """
-    fees = get_fees(session, market)
-
-    # Цена, при которой после комиссий вернём себестоимость.
-    rate = Decimal(1) - fees.total_sale_rate
-    break_even = (
-        (cost_basis + fees.network_fee) / rate if rate > 0 else cost_basis
+    minimum = price_floor(
+        session,
+        market=market,
+        cost_basis=cost_basis,
+        floor_ratio=floor_ratio,
+        currency=currency,
     )
-    minimum = break_even * floor_ratio
 
-    anchor = snapshot.floor_price or snapshot.median_price
-    if anchor:
-        # Встаём чуть ниже текущего floor, чтобы продать быстрее.
-        target = anchor * (Decimal(1) - Decimal("0.01"))
-        if markup > 0 and snapshot.median_price:
-            target = max(target, snapshot.median_price * (Decimal(1) + markup))
+    anchor = snapshot.median_price or snapshot.floor_price
+    if markup > 0 and anchor:
+        # Старт лестницы: наценка считается от рыночной цены.
+        target = anchor * (Decimal(1) + markup)
+    elif snapshot.floor_price:
+        # Без наценки подрезаем floor на процент, чтобы уйти первыми.
+        target = snapshot.floor_price * (Decimal(1) - Decimal("0.01"))
+    elif anchor:
+        target = anchor
     else:
         target = minimum * (Decimal(1) + markup)
 
-    return max(minimum, target).quantize(Decimal("1"))
+    return max(minimum, round_price(target, currency))

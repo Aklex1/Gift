@@ -11,6 +11,7 @@ import datetime as dt
 import logging
 from decimal import Decimal
 
+from app.adapters.registry import get_adapter
 from app.db import session_scope
 from app.enums import Market, PositionStatus, TradeMode
 from app.models import Gift, Position, Strategy
@@ -72,6 +73,8 @@ async def run_once() -> dict:
                 session, collection=gift.collection, model=gift.model
             )
 
+            currency = get_adapter(market).native_currency
+
             if position.status is PositionStatus.HELD:
                 price = valuation.suggested_list_price(
                     session,
@@ -80,6 +83,7 @@ async def run_once() -> dict:
                     snapshot=snapshot,
                     markup=Decimal(strategy.sell_markup or 0),
                     floor_ratio=Decimal(strategy.floor_ratio or 1),
+                    currency=currency,
                 )
                 plan_list.append({"position_id": position.id, "price": price, "mode": mode})
                 continue
@@ -96,15 +100,21 @@ async def run_once() -> dict:
                 continue
 
             step = Decimal(strategy.reprice_step or 0)
-            new_price = (current * (Decimal(1) - step)).quantize(Decimal("1"))
+            new_price = valuation.round_price(current * (Decimal(1) - step), currency)
 
-            floor = valuation.suggested_list_price(
+            # Округление может съесть шаг целиком: тогда снижаем на
+            # минимальный шаг цены, иначе лот завис бы навсегда.
+            if new_price >= current:
+                new_price = current - valuation.PRICE_STEP.get(
+                    currency, Decimal("0.01")
+                )
+
+            floor = valuation.price_floor(
                 session,
                 market=market,
                 cost_basis=position.cost_basis,
-                snapshot=snapshot,
-                markup=Decimal(0),
                 floor_ratio=Decimal(strategy.floor_ratio or 1),
+                currency=currency,
             )
             if new_price <= floor:
                 # Дальше снижать нельзя — уйдём в убыток.

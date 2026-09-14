@@ -192,3 +192,92 @@ def test_cheaper_market_commission_changes_verdict(session):
 
     assert on_telegram.net_profit < 0, "при комиссии 20% это убыток"
     assert on_portals.net_profit > on_telegram.net_profit
+
+
+def test_ton_prices_keep_cents(session):
+    """Цены в TON не округляются до целого.
+
+    Округление до единицы превращало 4.16 TON в 6 TON — лот с такой
+    ценой никогда бы не продался.
+    """
+    from app.enums import Currency
+    from app.services.valuation import round_price
+
+    assert round_price(Decimal("4.158"), Currency.TON) == Decimal("4.15")
+    assert round_price(Decimal("3.999"), Currency.TON) == Decimal("3.99")
+    # Stars остаются целыми.
+    assert round_price(Decimal("1499.7"), Currency.STARS) == Decimal("1499")
+
+
+def test_list_price_never_below_break_even_in_ton(session):
+    """Пол цены считается с комиссией площадки, а не наугад."""
+    from app.enums import Currency
+    from app.services.valuation import break_even_price, price_floor
+
+    seed_fee_schedules(session)
+    cost = Decimal("3.9")
+    be = break_even_price(session, market=Market.PORTALS, cost_basis=cost)
+    floor = price_floor(
+        session, market=Market.PORTALS, cost_basis=cost,
+        floor_ratio=Decimal("1.02"), currency=Currency.TON,
+    )
+    # При комиссии 2,5% и сетевой 0.05 безубыточность выше цены покупки.
+    assert be > cost
+    assert floor > be
+
+
+def test_reprice_ladder_always_descends(session):
+    """Каждый шаг репрайса реально снижает цену.
+
+    После округления шаг мог обнулиться, и лот завис бы на одной цене
+    навсегда.
+    """
+    from app.enums import Currency
+    from app.services.valuation import PRICE_STEP, round_price
+
+    price = Decimal("4.20")
+    seen = []
+    for _ in range(6):
+        nxt = round_price(price * Decimal("0.95"), Currency.TON)
+        if nxt >= price:
+            nxt = price - PRICE_STEP[Currency.TON]
+        assert nxt < price, "шаг обязан снижать цену"
+        seen.append(nxt)
+        price = nxt
+    assert seen == sorted(seen, reverse=True)
+
+
+def test_markup_starts_ladder_above_market(session):
+    """Наценка задаёт старт лестницы, а не итоговую цену."""
+    from app.enums import Currency
+
+    seed_fee_schedules(session)
+    snapshot = _snapshot(median="4.5", floor="4.2")
+    with_markup = suggested_list_price(
+        session, market=Market.PORTALS, cost_basis=Decimal("3.9"),
+        snapshot=snapshot, markup=Decimal("0.25"),
+        floor_ratio=Decimal("1.02"), currency=Currency.TON,
+    )
+    without = suggested_list_price(
+        session, market=Market.PORTALS, cost_basis=Decimal("3.9"),
+        snapshot=snapshot, markup=Decimal("0"),
+        floor_ratio=Decimal("1.02"), currency=Currency.TON,
+    )
+    # С наценкой стартуем выше рынка, без неё — подрезаем floor.
+    assert with_markup > Decimal("4.5")
+    assert without < Decimal("4.2")
+
+
+def test_falling_market_still_respects_floor(session):
+    """Если рынок ушёл ниже себестоимости, цена не падает за пол."""
+    from app.enums import Currency
+
+    seed_fee_schedules(session)
+    # Купили за 10, рынок упал до 5.
+    price = suggested_list_price(
+        session, market=Market.PORTALS, cost_basis=Decimal("10"),
+        snapshot=_snapshot(median="5", floor="5"),
+        markup=Decimal("0"), floor_ratio=Decimal("1.02"),
+        currency=Currency.TON,
+    )
+    assert price > Decimal("10"), "продажа в убыток недопустима"
