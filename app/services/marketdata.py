@@ -320,7 +320,7 @@ def snapshot_from_attribute_floor(
     collection: str,
     model: str | None,
     model_floor: Decimal,
-    collection_floor: Decimal | None,
+    collection_floor: Decimal | None = None,
     listed_count: int = 0,
 ) -> MarketSnapshot:
     """Срез рынка по floor конкретной модели.
@@ -334,7 +334,10 @@ def snapshot_from_attribute_floor(
         collection=collection,
         model=model,
         median_price=model_floor,
-        floor_price=collection_floor or model_floor,
+        # Ориентиром служит floor именно этой модели. Floor коллекции
+        # для редкой модели нерелевантен: по нему продаются обычные
+        # экземпляры, и оценка занизилась бы до бессмыслицы.
+        floor_price=model_floor,
         sample_size=max(1, listed_count),
         # Данные приходят от самой площадки и обновляются постоянно.
         confidence=Confidence.HIGH if listed_count >= 3 else Confidence.MEDIUM,
