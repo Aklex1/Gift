@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.enums import TradeMode
@@ -136,6 +136,23 @@ class Settings(BaseSettings):
     public_url: str = Field(default="", alias="PUBLIC_URL")
 
     # ------------------------------------------------------------------
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_blanks(cls, data: object) -> object:
+        """Пустое значение в .env означает «не задано».
+
+        Строка вида ``TG_API_ID=`` без значения иначе роняла запуск
+        ошибкой разбора числа. Выбрасываем такие ключи, чтобы
+        подставились значения по умолчанию.
+        """
+        if not isinstance(data, dict):
+            return data
+        return {
+            key: value
+            for key, value in data.items()
+            if not (isinstance(value, str) and not value.strip())
+        }
+
     @field_validator("data_dir", mode="before")
     @classmethod
     def _expand(cls, v: object) -> object:

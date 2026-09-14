@@ -13,7 +13,8 @@ DATA_DIR="/var/lib/gift"
 DB_NAME="gift"
 DB_USER="gift"
 REPO_URL="${REPO_URL:-https://github.com/Aklex1/gift.git}"
-BRANCH="${BRANCH:-main}"
+# Ветка по умолчанию. После слияния в main запускайте с BRANCH=main
+BRANCH="${BRANCH:-claude/telegram-gift-resale-bot-p74jn7}"
 
 log()  { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }

@@ -13,8 +13,9 @@
 
 ```bash
 # на сервере, от root
-git clone https://github.com/Aklex1/gift.git /opt/gift
-bash /opt/gift/deploy/install.sh
+BRANCH=claude/telegram-gift-resale-bot-p74jn7
+git clone -b "$BRANCH" https://github.com/Aklex1/Gift.git /opt/gift
+BRANCH="$BRANCH" bash /opt/gift/deploy/install.sh
 
 # вписать ключи
 nano /opt/gift/.env          # BOT_TOKEN, OWNER_IDS, TG_API_ID, TG_API_HASH

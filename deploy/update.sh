@@ -2,7 +2,7 @@
 # Обновление Gift до свежей версии из git.
 set -euo pipefail
 APP_DIR=/opt/gift
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-claude/telegram-gift-resale-bot-p74jn7}"
 
 echo "==> Останавливаю сервисы"
 systemctl stop gift-bot gift-worker gift-web || true
