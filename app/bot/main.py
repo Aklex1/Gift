@@ -347,29 +347,67 @@ async def cmd_pnl(message: Message) -> None:
 @dp.message(F.text == "💰 Баланс")
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message) -> None:
-    """Балансы площадок и состояние бюджетов."""
+    """Балансы аккаунтов, кошельков площадок и состояние бюджетов."""
     if not is_owner(message.from_user.id if message.from_user else None):
         await deny(message)
         return
 
-    lines = ["<b>Балансы</b>", ""]
-    adapter = get_adapter(Market.TELEGRAM)
+    from app.services import accounts as accounts_service
+    from app.services import balances
+    from app.services.gifts import format_amount
+
+    await message.answer("Опрашиваю балансы…")
+
+    # Свежие значения, а не то, что сохранилось с прошлого раза.
     try:
-        for item in await adapter.balance():
-            lines.append(f"Telegram · {item.currency.value}: <b>{item.amount}</b>")
-    except Exception as exc:  # noqa: BLE001
-        lines.append(f"Telegram: недоступен ({type(exc).__name__})")
+        await accounts_service.refresh_balances()
+        await balances.refresh()
+    except Exception as exc:  # noqa: BLE001 - показать хоть что-то
+        log.warning("Опрос балансов не удался: %s", exc)
+
+    lines = ["<b>Торговые аккаунты</b>"]
+    with session_scope() as session:
+        rows = accounts_service.all_accounts(session)
+        if not rows:
+            lines.append("— аккаунтов нет, добавьте в панели")
+        for account in rows:
+            state = "" if accounts_service.is_authorized(account) else " (вход не выполнен)"
+            lines.append(
+                f"<b>{account.name}</b>{state}\n"
+                f"   Stars: {gifts_service.format_stars(account.stars_balance)} ★\n"
+                f"   TON:   {format_amount(account.ton_balance)}"
+            )
+
+    lines.append("")
+    lines.append("<b>Кошельки площадок</b>")
+    market_rows = balances.snapshot()
+    if not market_rows:
+        lines.append("— ни одна площадка не подключена")
+    for item in market_rows:
+        if item["amount"] is not None:
+            lines.append(
+                f"<b>{item['title']}</b>: {format_amount(item['amount'])} "
+                f"{item['currency']}"
+            )
+        else:
+            reason = item.get("error") or "не опрашивался"
+            lines.append(f"<b>{item['title']}</b>: {reason}")
 
     with session_scope() as session:
         lines.append("")
-        lines.append("<b>Бюджеты</b>")
-        for budget in session.query(Budget).all():
+        lines.append("<b>Бюджеты стратегий</b>")
+        budgets = session.query(Budget).all()
+        if not budgets:
+            lines.append("— бюджетов нет")
+        for budget in budgets:
             snap = budget_service.snapshot(session, budget.id)
+            currency = snap["currency"]
             lines.append(
-                f"{snap['name']}: потолок {gifts_service.format_stars(snap['hard_cap'])}, "
-                f"свободно {gifts_service.format_stars(snap['available'])}, "
-                f"в резерве {gifts_service.format_stars(snap['reserved'])}"
+                f"{snap['name']}: потолок {format_amount(snap['hard_cap'])} {currency}, "
+                f"свободно {format_amount(snap['available'])}, "
+                f"в резерве {format_amount(snap['reserved'])}"
             )
+
     await message.answer("\n".join(lines))
 
 

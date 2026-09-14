@@ -42,9 +42,23 @@ async def refresh(markets: tuple[Market, ...] = WITH_WALLET) -> dict:
     for market in markets:
         adapter = get_adapter(market)
         if not adapter.supports(Capability.BALANCE):
-            # Нет токена — площадка и не должна опрашиваться.
-            store.set(_key(market), "")
-            report[market.value] = "нет доступа"
+            # Без токена площадка баланс не отдаёт. Причину надо
+            # сохранить: иначе в панели будет пустая клетка, по которой
+            # не понять, чего не хватает.
+            store.set(
+                _key(market),
+                json.dumps(
+                    {
+                        "at": dt.datetime.utcnow().isoformat(timespec="seconds"),
+                        "error": (
+                            "нужен токен площадки — задайте в панели, "
+                            "раздел «Настройки»"
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            report[market.value] = "нет токена"
             continue
 
         record: dict[str, object] = {
