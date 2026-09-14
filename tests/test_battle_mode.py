@@ -64,8 +64,8 @@ def restore_settings():
 # Контракт
 # ----------------------------------------------------------------------
 def test_missing_contract_means_no_write(contracts_dir):
-    """Без файла контракта боевых операций нет."""
-    contract = load("portals")
+    """Без файла и без встроенных путей боевых операций нет."""
+    contract = load("mrkt")
     assert contract.described == []
     assert not contract.has("buy")
 
@@ -129,16 +129,58 @@ def test_template_is_not_usable_as_is(contracts_dir):
 # ----------------------------------------------------------------------
 # Предохранители
 # ----------------------------------------------------------------------
-def test_flag_without_contract_keeps_buy_closed(contracts_dir):
-    """Флаг без контракта не открывает покупку."""
+def test_flag_without_contract_keeps_buy_closed(contracts_dir, monkeypatch):
+    """Для площадки без известных эндпоинтов флага мало.
+
+    MRKT не публикует торговый контракт, поэтому его покупка остаётся
+    закрытой, пока владелец не опишет эндпоинты сам.
+    """
+    monkeypatch.setattr(settings, "mrkt_enable_write", True)
+    monkeypatch.setattr(settings, "mrkt_auth", "token")
+    with pytest.raises(ExecutionBlocked, match="недоступна"):
+        guard(TradeMode.SEMI, Market.MRKT, Capability.BUY)
+
+
+def test_portals_works_out_of_the_box(contracts_dir):
+    """У Portals эндпоинты известны — хватает флага и токена.
+
+    Переносить пути из DevTools вручную не нужно: это главный
+    источник дорогих опечаток.
+    """
+    settings.portals_enable_write = True
+    settings.portals_auth = "tma query_id=..."
+    guard(TradeMode.SEMI, Market.PORTALS, Capability.BUY)
+
+    from app.adapters.registry import get_adapter
+
+    adapter = get_adapter(Market.PORTALS)
+    assert adapter.contract.get("buy").path == "/nfts"
+    assert adapter.contract.get("reprice").path == "/nfts/{external_id}/list"
+
+
+def test_file_overrides_built_in_endpoint(contracts_dir):
+    """Файл контракта главнее встроенных путей.
+
+    Если площадка сменит эндпоинт, владелец поправит его сам, не
+    дожидаясь новой версии бота.
+    """
+    (contracts_dir / "portals.json").write_text(
+        json.dumps({"buy": {"method": "POST", "path": "/nfts/v2/buy"}}),
+        encoding="utf-8",
+    )
     settings.portals_enable_write = True
     settings.portals_auth = "token"
-    with pytest.raises(ExecutionBlocked, match="недоступна"):
-        guard(TradeMode.SEMI, Market.PORTALS, Capability.BUY)
+
+    from app.adapters.registry import get_adapter
+
+    adapter = get_adapter(Market.PORTALS)
+    assert adapter.contract.get("buy").path == "/nfts/v2/buy"
+    # Остальные операции остаются встроенными.
+    assert adapter.contract.get("reprice").path == "/nfts/{external_id}/list"
 
 
 def test_contract_without_flag_keeps_buy_closed(contracts_dir):
-    """Контракт без флага не открывает покупку."""
+    """Без флага не помогает даже заполненный контракт."""
     (contracts_dir / "portals.json").write_text(
         json.dumps({"buy": {"method": "POST", "path": "/nfts/buy"}}),
         encoding="utf-8",

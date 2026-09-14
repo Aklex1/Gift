@@ -165,24 +165,29 @@ def contract_path(market: str) -> Path:
     return settings.contracts_dir / f"{market}.json"
 
 
-def load(market: str) -> MarketContract:
+def load(market: str, *, defaults: dict | None = None) -> MarketContract:
     """Прочитать контракт площадки.
 
-    Отсутствие файла — не ошибка: площадка просто останется без
-    боевых операций.
+    Args:
+        defaults: известные эндпоинты площадки из кода. Применяются,
+            когда файла нет или в нём нет такой операции. Файл всегда
+            главнее: это способ поправить путь, когда площадка его
+            сменит, не дожидаясь новой версии бота.
     """
     path = contract_path(market)
-    if not path.exists():
+    raw: dict = dict(defaults or {})
+
+    if path.exists():
+        try:
+            from_file = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.error("Контракт %s повреждён: %s", path, exc)
+            raise ContractError(f"{path}: {exc}") from exc
+        if not isinstance(from_file, dict):
+            raise ContractError(f"{path}: ожидался объект JSON")
+        raw.update(from_file)
+    elif not raw:
         return MarketContract(market, {})
-
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        log.error("Контракт %s повреждён: %s", path, exc)
-        raise ContractError(f"{path}: {exc}") from exc
-
-    if not isinstance(raw, dict):
-        raise ContractError(f"{path}: ожидался объект JSON")
 
     endpoints: dict[str, Endpoint] = {}
     for op in WRITE_OPS:

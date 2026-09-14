@@ -1,11 +1,19 @@
 """Адаптер Portals (portals.tg / portals-market.com).
 
-Статус по аудиту ТЗ: публичного developer API и SLA нет, доступ идёт
-через приватный TMA-контракт. Поэтому все возможности — EXPERIMENTAL,
-а write включается только явным флагом в конфиге и никогда не попадает
-в AUTO.
+Эндпоинты соответствуют фактическому API мини-приложения:
 
-Как получить PORTALS_AUTH: см. docs/SETUP.md, раздел «Токены площадок».
+    GET  nfts/search?offset&limit&sort_by&status=listed&filter_by_*
+    GET  nfts/owned?offset&limit
+    GET  users/wallets/
+    GET  market/actions/?offset&limit
+    POST nfts                  {"nft_details": [{"id": ..., "price": "..."}]}
+    POST nfts/bulk-list        {"nft_prices": [{"nft_id": ..., "price": "..."}]}
+    POST nfts/{nft_id}/list    {"price": "..."}
+
+Публичного developer API и SLA у площадки нет: контракт может
+поменяться без предупреждения. Поэтому боевые операции по умолчанию
+выключены и включаются PORTALS_ENABLE_WRITE, а пути при желании
+переопределяются файлом markets/portals.json.
 """
 
 from __future__ import annotations
@@ -25,14 +33,35 @@ from app.adapters.base import (
 )
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
-from app.services import secrets
 from app.enums import Currency, Market
+from app.services import secrets
 
 log = logging.getLogger(__name__)
 
+#: Значения по умолчанию для боевых операций.
+#: Пользователю не нужно переносить их руками из DevTools, но при
+#: смене API их можно переопределить в markets/portals.json.
+DEFAULT_WRITE_CONTRACT = {
+    "buy": {
+        "method": "POST",
+        "path": "/nfts",
+        "body": {"nft_details": [{"id": "{external_id}", "price": "{price}"}]},
+    },
+    "list": {
+        "method": "POST",
+        "path": "/nfts/bulk-list",
+        "body": {"nft_prices": [{"nft_id": "{external_id}", "price": "{price}"}]},
+    },
+    "reprice": {
+        "method": "POST",
+        "path": "/nfts/{external_id}/list",
+        "body": {"price": "{price}"},
+    },
+}
+
 
 class PortalsAdapter(HttpMarketAdapter):
-    """Portals: чтение каталога и истории, опционально — торговля."""
+    """Portals: чтение каталога и, по явному разрешению, торговля."""
 
     market = Market.PORTALS
     native_currency = Currency.TON
@@ -44,7 +73,6 @@ class PortalsAdapter(HttpMarketAdapter):
             auth or secrets.resolve("PORTALS_AUTH", settings.portals_auth),
         )
         has_auth = bool(self.auth)
-        # Без токена доступен только анонимный каталог (и то не всегда).
         self.capabilities = {
             Capability.SEARCH: CapabilityStatus.EXPERIMENTAL,
             Capability.HISTORY: CapabilityStatus.EXPERIMENTAL,
@@ -54,7 +82,6 @@ class PortalsAdapter(HttpMarketAdapter):
             Capability.INVENTORY: (
                 CapabilityStatus.EXPERIMENTAL if has_auth else CapabilityStatus.UNAVAILABLE
             ),
-            # Боевые операции закрыты, пока их не откроет контракт.
             Capability.BUY: CapabilityStatus.UNAVAILABLE,
             Capability.LIST: CapabilityStatus.UNAVAILABLE,
             Capability.REPRICE: CapabilityStatus.UNAVAILABLE,
@@ -63,12 +90,79 @@ class PortalsAdapter(HttpMarketAdapter):
                 CapabilityStatus.EXPERIMENTAL if has_auth else CapabilityStatus.UNAVAILABLE
             ),
         }
-        # Открывает buy/list/reprice/cancel, если PORTALS_ENABLE_WRITE=true
-        # и операции описаны в markets/portals.json.
         self.load_write_contract(
-            enabled=bool(settings.portals_enable_write and has_auth)
+            enabled=bool(settings.portals_enable_write and has_auth),
+            defaults=DEFAULT_WRITE_CONTRACT,
         )
 
+    # ------------------------------------------------------------------
+    def _headers(self) -> dict[str, str]:
+        """Portals отвергает запросы без Origin и Referer своего домена."""
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+            "Origin": "https://portals-market.com",
+            "Referer": "https://portals-market.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+            ),
+        }
+        if self.auth:
+            # Значение копируется целиком вместе с префиксом "tma ".
+            headers["Authorization"] = self.auth
+        return headers
+
+    @staticmethod
+    def parse_gift(item: dict) -> GiftRef:
+        """Разобрать подарок Portals.
+
+        Атрибуты приходят списком вида
+        ``[{"type": "model", "value": "...", "rarity_per_mille": 15}]``.
+        """
+        traits: dict[str, str] = {}
+        rarity: dict[str, float] = {}
+        for attr in item.get("attributes") or []:
+            if not isinstance(attr, dict):
+                continue
+            kind = str(attr.get("type") or "").lower()
+            if not kind:
+                continue
+            traits[kind] = attr.get("value")
+            per_mille = attr.get("rarity_per_mille")
+            if per_mille is not None:
+                try:
+                    rarity[f"{kind}_rarity"] = round(float(per_mille) / 1000.0, 6)
+                except (TypeError, ValueError):
+                    pass
+
+        number = first(item, "external_collection_number", "number", "num")
+        try:
+            number = int(number) if number is not None else None
+        except (TypeError, ValueError):
+            number = None
+
+        return GiftRef(
+            collection=str(first(item, "name", "collection", default="unknown")),
+            number=number,
+            slug=first(item, "id", "nft_id"),
+            model=traits.get("model"),
+            backdrop=traits.get("backdrop"),
+            symbol=traits.get("symbol"),
+            nft_address=first(item, "address", "nft_address"),
+            attributes={
+                **rarity,
+                "collection_id": item.get("collection_id"),
+                "floor_price": item.get("floor_price"),
+                "status": item.get("status"),
+                # До этого момента подарок нельзя перепродать.
+                "unlocks_at": item.get("unlocks_at"),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Чтение
+    # ------------------------------------------------------------------
     async def search(
         self,
         *,
@@ -79,12 +173,13 @@ class PortalsAdapter(HttpMarketAdapter):
         max_price: Decimal | None = None,
         limit: int = 100,
     ) -> list[ListingDTO]:
-        """Активные лоты Portals, отсортированные по цене."""
+        """Активные лоты, отсортированные по возрастанию цены."""
         self._require(Capability.SEARCH)
         params: dict[str, object] = {
             "offset": 0,
             "limit": min(limit, 100),
             "sort_by": "price asc",
+            "status": "listed",
         }
         if collection:
             params["filter_by_collections"] = collection
@@ -95,15 +190,20 @@ class PortalsAdapter(HttpMarketAdapter):
         if symbol:
             params["filter_by_symbols"] = symbol
         if max_price is not None:
-            params["max_price"] = str(max_price)
+            params["min_price"] = 0
+            params["max_price"] = float(max_price)
 
         data = await self.request("GET", "/nfts/search", params=params)
+        return self._to_listings(dig(data, "results", "nfts", "items", "data"))
+
+    def _to_listings(self, rows: list) -> list[ListingDTO]:
+        """Превратить записи Portals в лоты."""
         out: list[ListingDTO] = []
-        for item in dig(data, "results", "nfts", "items", "data"):
+        for item in rows:
             if not isinstance(item, dict):
                 continue
-            price = to_decimal(first(item, "price", "amount", "floor_price"))
-            external_id = first(item, "id", "nft_id", "slug", "address")
+            price = to_decimal(first(item, "price", "amount"))
+            external_id = first(item, "id", "nft_id")
             if price is None or price <= 0 or not external_id:
                 continue
             out.append(
@@ -113,8 +213,8 @@ class PortalsAdapter(HttpMarketAdapter):
                     gift=self.parse_gift(item),
                     price=price,
                     currency=Currency.TON,
-                    seller=first(item, "owner", "seller", "owner_address"),
-                    raw={"portals": True},
+                    seller=first(item, "owner_id", "owner", "seller"),
+                    raw={"status": item.get("status")},
                 )
             )
         return out
@@ -122,7 +222,7 @@ class PortalsAdapter(HttpMarketAdapter):
     async def history(
         self, *, collection: str | None = None, model: str | None = None, limit: int = 200
     ) -> list[SaleDTO]:
-        """История продаж Portals — источник для оценки и ликвидности."""
+        """История сделок площадки — основа для оценки и ликвидности."""
         self._require(Capability.HISTORY)
         params: dict[str, object] = {"offset": 0, "limit": min(limit, 100)}
         if collection:
@@ -136,19 +236,11 @@ class PortalsAdapter(HttpMarketAdapter):
             if not isinstance(item, dict):
                 continue
             action = str(first(item, "type", "action", default="")).lower()
-            if action and "buy" not in action and "sale" not in action:
+            if action and not any(k in action for k in ("buy", "sale", "sold")):
                 continue
             price = to_decimal(first(item, "amount", "price"))
             if price is None or price <= 0:
                 continue
-            raw_date = first(item, "created_at", "date", "timestamp")
-            happened = dt.datetime.utcnow()
-            if isinstance(raw_date, str):
-                try:
-                    happened = dt.datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                    happened = happened.replace(tzinfo=None)
-                except ValueError:
-                    pass
             nft = item.get("nft") if isinstance(item.get("nft"), dict) else item
             out.append(
                 SaleDTO(
@@ -157,20 +249,39 @@ class PortalsAdapter(HttpMarketAdapter):
                     gift=self.parse_gift(nft),
                     price=price,
                     currency=Currency.TON,
-                    happened_at=happened,
+                    happened_at=_parse_time(
+                        first(item, "created_at", "date", "timestamp")
+                    ),
                     raw={"action": action},
                 )
             )
         return out
 
     async def balance(self) -> list[BalanceDTO]:
-        """Баланс аккаунта Portals."""
+        """Баланс кошельков аккаунта на площадке."""
         self._require(Capability.BALANCE)
-        data = await self.request("GET", "/users/balance/")
-        amount = to_decimal(first(data, "balance", "amount", "ton"), Decimal(0))
-        return [
-            BalanceDTO(market=self.market, currency=Currency.TON, amount=amount or Decimal(0))
-        ]
+        data = await self.request("GET", "/users/wallets/")
+
+        rows = dig(data, "wallets", "results", "items", "data")
+        out: list[BalanceDTO] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            amount = to_decimal(first(item, "balance", "amount"), Decimal(0))
+            if amount is None:
+                continue
+            out.append(
+                BalanceDTO(market=self.market, currency=Currency.TON, amount=amount)
+            )
+        if not out:
+            # Ответ может быть одиночным объектом, а не списком.
+            amount = to_decimal(first(data, "balance", "amount", "ton"), Decimal(0))
+            out.append(
+                BalanceDTO(
+                    market=self.market, currency=Currency.TON, amount=amount or Decimal(0)
+                )
+            )
+        return out
 
     async def inventory(self) -> list[ListingDTO]:
         """Собственные подарки на Portals."""
@@ -179,23 +290,49 @@ class PortalsAdapter(HttpMarketAdapter):
             "GET", "/nfts/owned", params={"offset": 0, "limit": 100}
         )
         out: list[ListingDTO] = []
-        for item in dig(data, "nfts", "results", "items", "data"):
+        for item in dig(data, "results", "nfts", "items", "data"):
             if not isinstance(item, dict):
                 continue
-            external_id = first(item, "id", "nft_id", "slug")
+            external_id = first(item, "id", "nft_id")
             if not external_id:
                 continue
+            price = to_decimal(first(item, "price"), Decimal(0)) or Decimal(0)
+            status = str(item.get("status") or "").lower()
             out.append(
                 ListingDTO(
                     market=self.market,
                     external_id=str(external_id),
                     gift=self.parse_gift(item),
-                    price=to_decimal(first(item, "price"), Decimal(0)) or Decimal(0),
+                    price=price,
                     currency=Currency.TON,
-                    raw={"listed": bool(first(item, "price"))},
+                    raw={
+                        "is_listed": status == "listed" or price > 0,
+                        "unlocks_at": item.get("unlocks_at"),
+                        "status": status,
+                    },
                 )
             )
         return out
+
+    async def fetch_listing(self, external_id: str) -> ListingDTO | None:
+        """Перечитать конкретный лот перед покупкой.
+
+        Отдельного эндпоинта на один лот у площадки нет, поэтому
+        используется поиск по идентификатору.
+        """
+        try:
+            data = await self.request(
+                "GET",
+                "/nfts/search",
+                params={"offset": 0, "limit": 50, "status": "listed", "query": external_id},
+            )
+        except Exception as exc:  # noqa: BLE001 - отсутствие лота не ошибка
+            log.debug("Portals: лот %s перечитать не удалось: %s", external_id, exc)
+            return None
+        for listing in self._to_listings(dig(data, "results", "nfts", "items", "data")):
+            if listing.external_id == external_id:
+                return listing
+        return None
 
     # ------------------------------------------------------------------
     # Боевые операции
@@ -203,16 +340,16 @@ class PortalsAdapter(HttpMarketAdapter):
     async def buy(
         self, *, external_id: str, expected_price: Decimal, idempotency_key: str
     ) -> ExecutionResult:
-        """Купить лот на Portals по точной ожидаемой цене.
+        """Купить лот по точной ожидаемой цене.
 
-        Перед покупкой лот перечитывается: если он исчез или подорожал,
-        сделка отменяется без обращения к платёжному эндпоинту.
+        Лот перечитывается заново: если он исчез или цена изменилась,
+        платёжный запрос не отправляется вовсе.
         """
         self._require(Capability.BUY)
 
-        fresh = await self._fetch_listing(external_id)
+        fresh = await self.fetch_listing(external_id)
         if fresh is None:
-            return ExecutionResult(ok=False, detail="лот больше не доступен")
+            return ExecutionResult(ok=False, detail="лот больше не выставлен")
         if fresh.price != expected_price:
             return ExecutionResult(
                 ok=False,
@@ -240,36 +377,18 @@ class PortalsAdapter(HttpMarketAdapter):
     ) -> ExecutionResult:
         """Изменить цену своего лота."""
         self._require(Capability.REPRICE)
-        op = "reprice" if self.contract.has("reprice") else "list"
         return await self.execute_contract_op(
-            op, external_id=external_id, price=new_price
+            "reprice", external_id=external_id, price=new_price
         )
 
     async def cancel(self, *, external_id: str, idempotency_key: str) -> ExecutionResult:
-        """Снять лот с продажи."""
+        """Снять лот с продажи.
+
+        Отдельного эндпоинта снятия у площадки нет; операция доступна,
+        только если описана в markets/portals.json.
+        """
         self._require(Capability.CANCEL)
         return await self.execute_contract_op("cancel", external_id=external_id)
-
-    async def _fetch_listing(self, external_id: str) -> ListingDTO | None:
-        """Перечитать конкретный лот перед покупкой."""
-        try:
-            data = await self.request("GET", f"/nfts/{external_id}")
-        except Exception as exc:  # noqa: BLE001 - отсутствие лота не ошибка
-            log.debug("Portals: лот %s недоступен: %s", external_id, exc)
-            return None
-        item = data.get("nft") if isinstance(data, dict) and "nft" in data else data
-        if not isinstance(item, dict):
-            return None
-        price = to_decimal(first(item, "price", "amount"))
-        if price is None or price <= 0:
-            return None
-        return ListingDTO(
-            market=self.market,
-            external_id=external_id,
-            gift=self.parse_gift(item),
-            price=price,
-            currency=Currency.TON,
-        )
 
     async def reconcile(
         self, *, external_ref: str | None, gift_ref: GiftRef | None
@@ -285,3 +404,18 @@ class PortalsAdapter(HttpMarketAdapter):
             external_ref=external_ref,
             detail="есть в инвентаре" if mine else "в инвентаре не найден",
         )
+
+
+def _parse_time(value: object) -> dt.datetime:
+    """Разобрать время из ответа площадки."""
+    if isinstance(value, (int, float)):
+        seconds = float(value) / (1000 if value > 1e11 else 1)
+        return dt.datetime.utcfromtimestamp(seconds)
+    if isinstance(value, str):
+        try:
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).replace(
+                tzinfo=None
+            )
+        except ValueError:
+            pass
+    return dt.datetime.utcnow()

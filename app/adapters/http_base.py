@@ -223,20 +223,28 @@ class HttpMarketAdapter(MarketAdapter):
     # ------------------------------------------------------------------
     # Боевой контур
     # ------------------------------------------------------------------
-    def load_write_contract(self, *, enabled: bool) -> MarketContract:
+    def load_write_contract(
+        self, *, enabled: bool, defaults: dict | None = None
+    ) -> MarketContract:
         """Загрузить контракт write-операций и открыть соответствующие
         возможности.
 
-        Возможность открывается только если выполнены оба условия:
-        боевой режим площадки явно включён в конфиге И операция описана
-        в файле контракта. Иначе она остаётся UNAVAILABLE, и адаптер
+        Возможность открывается, только если боевой режим площадки явно
+        включён в конфиге. Иначе она остаётся UNAVAILABLE, и адаптер
         физически не может потратить деньги.
+
+        Args:
+            enabled: разрешена ли торговля на этой площадке.
+            defaults: известные эндпоинты площадки. Используются, если
+                файла контракта нет; файл перекрывает
+                их поштучно — это путь обновить путь, когда площадка
+                его сменит, без правки кода.
         """
         self.contract = MarketContract(self.market.value, {})
         if not enabled:
             return self.contract
         try:
-            self.contract = load_contract(self.market.value)
+            self.contract = load_contract(self.market.value, defaults=defaults)
         except ContractError as exc:
             log.error("%s: боевой режим выключен, контракт неверен: %s",
                       self.market.value, exc)
