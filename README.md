@@ -154,6 +154,7 @@ gift-cli balance     # балансы
 gift-cli probe       # живая проверка площадок (только чтение)
 gift-cli scan        # разовый скан
 gift-cli inventory   # сверка портфеля
+gift-cli env-sync                    # дописать новые настройки в .env
 gift-cli contract portals            # готовность площадки к торговле
 gift-cli contract portals --template # заготовка контракта эндпоинтов
 ```

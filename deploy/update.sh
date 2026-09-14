@@ -62,7 +62,13 @@ log "3/6 Обновляю зависимости"
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip wheel
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
 
-log "4/6 Обновляю схему БД"
+log "4/6 Дополняю .env новыми настройками"
+# Установщик копирует .env.example только при первой установке.
+# Без этого шага после обновления в рабочем файле не хватало ключей,
+# появившихся в новой версии.
+sudo -u "$APP_USER" env -C "$APP_DIR" "$APP_DIR/.venv/bin/python" -m app.cli env-sync
+
+log "4b/6 Обновляю схему БД"
 sudo -u "$APP_USER" env -C "$APP_DIR" "$APP_DIR/.venv/bin/python" -m app.cli init
 
 log "5/6 Переустанавливаю сервисы и конфиг nginx"

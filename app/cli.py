@@ -10,6 +10,8 @@
     scan        — разовый проход сканера
     inventory   — сверка портфеля с инвентарём
     doctor      — проверка конфигурации перед запуском
+    env-sync    — дописать в .env новые настройки из .env.example,
+                  не трогая уже заданные значения
     contract    — работа с боевым контрактом площадки:
                   `contract portals` показывает состояние,
                   `contract portals --template` создаёт заготовку
@@ -283,6 +285,90 @@ async def _inventory() -> int:
     return 0
 
 
+def cmd_env_sync() -> int:
+    """Добавить в .env настройки, появившиеся в новых версиях.
+
+    Установщик копирует .env.example только при первой установке, и
+    после обновления в рабочем файле не хватает новых ключей. Здесь
+    они дописываются вместе с поясняющими комментариями; уже заданные
+    значения не трогаются.
+    """
+    import datetime as _dt
+
+    from app.config import BASE_DIR
+
+    env_path = BASE_DIR / ".env"
+    example_path = BASE_DIR / ".env.example"
+
+    if not example_path.exists():
+        print(f"✗ Не найден шаблон: {example_path}", file=sys.stderr)
+        return 1
+    if not env_path.exists():
+        env_path.write_text(example_path.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"✓ Создан {env_path} из шаблона")
+        return 0
+
+    def keys_of(text: str) -> set[str]:
+        """Имена настроек, заданных в файле."""
+        out = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                out.add(line.split("=", 1)[0].strip())
+        return out
+
+    current_text = env_path.read_text(encoding="utf-8")
+    have = keys_of(current_text)
+
+    # Собираем недостающие настройки вместе с комментариями над ними.
+    missing: list[str] = []
+    pending_comments: list[str] = []
+    added_keys: list[str] = []
+
+    for line in example_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            pending_comments = []
+            continue
+        if stripped.startswith("#"):
+            pending_comments.append(line)
+            continue
+        if "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in have:
+            pending_comments = []
+            continue
+        if missing:
+            missing.append("")
+        missing.extend(pending_comments)
+        missing.append(line)
+        added_keys.append(key)
+        pending_comments = []
+
+    if not added_keys:
+        print("✓ Все настройки из шаблона уже есть в .env")
+        return 0
+
+    stamp = _dt.datetime.now().strftime("%Y-%m-%d")
+    block = (
+        f"\n\n# =====================================================\n"
+        f"#  Добавлено при обновлении {stamp}\n"
+        f"# =====================================================\n"
+        + "\n".join(missing)
+        + "\n"
+    )
+    with env_path.open("a", encoding="utf-8") as handle:
+        handle.write(block)
+
+    print(f"✓ В {env_path} добавлено настроек: {len(added_keys)}")
+    for key in added_keys:
+        print(f"    {key}")
+    print("\nЗначения проставлены по умолчанию — проверьте и при необходимости")
+    print("поправьте, затем: systemctl restart gift-bot gift-worker gift-web")
+    return 0
+
+
 def cmd_doctor() -> int:
     """Проверить конфигурацию перед запуском."""
     problems: list[str] = []
@@ -390,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             "inventory",
             "doctor",
             "contract",
+            "env-sync",
         ],
     )
     parser.add_argument(
@@ -409,7 +496,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("укажите площадку: gift-cli contract portals")
         return asyncio.run(_contract(args.market, args.template))
 
-    sync_commands = {"gen-key": cmd_gen_key, "init": cmd_init, "doctor": cmd_doctor}
+    sync_commands = {
+        "gen-key": cmd_gen_key,
+        "init": cmd_init,
+        "doctor": cmd_doctor,
+        "env-sync": cmd_env_sync,
+    }
     if args.command in sync_commands:
         return sync_commands[args.command]()
 
