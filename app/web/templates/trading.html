@@ -161,6 +161,37 @@
 </form>
 
 <h2>Курсы валют</h2>
+<h2>Разница цен между площадками</h2>
+<p class="muted">
+  Один и тот же подарок стоит на площадках по-разному. Бот показывает
+  связки, которые переживают обе комиссии, перенос подарка и курс.
+  <b>Автоматически такие сделки не исполняются:</b> между покупкой и
+  продажей подарок нужно перевести вручную, и за это время цена на
+  второй площадке может уйти. Найденное появляется на странице
+  «Кандидаты».
+</p>
+<form method="post" action="/trading/arbitrage">
+  <div class="market">
+    <label class="cap">
+      <input type="checkbox" name="enabled" {{ 'checked' if arb.enabled }}>
+      Искать разницу цен
+    </label>
+    <label class="cap">
+      Минимальная доходность связки
+      <input type="text" name="min_roi" inputmode="decimal"
+             value="{{ '%.0f'|format(arb.min_roi_pct|float) }}">
+      <span class="unit">%</span>
+    </label>
+    <label class="cap">
+      Стоимость переноса подарка
+      <input type="text" name="transfer_ton" inputmode="decimal"
+             value="{{ arb.transfer_ton }}">
+      <span class="unit">TON</span>
+    </label>
+  </div>
+  <div class="actions"><button type="submit">Сохранить</button></div>
+</form>
+
 <form method="post" action="/trading/fx">
   <table>
     <tr><th>Пара</th><th>Курс</th><th>Источник</th><th>Обновлено</th></tr>

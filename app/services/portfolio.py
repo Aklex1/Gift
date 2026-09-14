@@ -190,6 +190,9 @@ def _close_as_sold(
     """Закрыть позицию как проданную и вернуть выручку в бюджет."""
     from app.services.valuation import get_fees, net_proceeds_from
 
+    # Цена здесь — в валюте площадки (list_price ставит репрайсер), и
+    # get_fees отдаёт сетевую комиссию в той же валюте. Приводить к
+    # Stars тут нечего: обе величины уже согласованы.
     fees = get_fees(session, market)
     proceeds = net_proceeds_from(price, fees)
 

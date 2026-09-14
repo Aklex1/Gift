@@ -216,7 +216,10 @@ def test_list_price_never_below_break_even_in_ton(session):
 
     seed_fee_schedules(session)
     cost = Decimal("3.9")
-    be = break_even_price(session, market=Market.PORTALS, cost_basis=cost)
+    # Считаем в TON: и себестоимость, и сетевая комиссия площадки.
+    be = break_even_price(
+        session, market=Market.PORTALS, cost_basis=cost, currency=Currency.TON
+    )
     floor = price_floor(
         session, market=Market.PORTALS, cost_basis=cost,
         floor_ratio=Decimal("1.02"), currency=Currency.TON,
@@ -292,16 +295,18 @@ def test_rare_model_valued_above_collection_floor(session):
     from app.services.marketdata import snapshot_from_attribute_floor
 
     seed_fee_schedules(session)
+    # Оценка сделки идёт в Stars, поэтому и floor модели — в Stars
+    # (12.5 TON и 4.2 TON по курсу 65).
     snapshot = snapshot_from_attribute_floor(
         collection="Lol Pop",
         model="Mirage",
-        model_floor=Decimal("12.5"),
-        collection_floor=Decimal("3.9"),
+        model_floor=Decimal("812.5"),
+        collection_floor=Decimal("253.5"),
         listed_count=8,
     )
     # Лот с редкой моделью выставлен по цене обычного.
     result = evaluate(
-        session, buy_market=Market.PORTALS, buy_price=Decimal("4.2"),
+        session, buy_market=Market.PORTALS, buy_price=Decimal("273"),
         sell_market=Market.PORTALS, snapshot=snapshot, is_official_api=False,
     )
     assert result.net_profit > 0
@@ -326,3 +331,40 @@ def test_common_model_at_floor_is_not_a_deal(session):
         sell_market=Market.PORTALS, snapshot=snapshot, is_official_api=False,
     )
     assert result.net_roi < Decimal("0.05")
+
+
+def test_network_fee_is_converted_to_calculation_currency(session):
+    """Сетевая комиссия площадки живёт в TON и не смешивается со Stars.
+
+    Дважды приводила к ошибке: 0.05 TON, посчитанные как 0.05 Stars,
+    занижают издержки в десятки раз, а посчитанные наоборот — во
+    столько же завышают и превращают прибыльную сделку в убыточную.
+    """
+    from app.enums import Currency
+    from app.services.marketdata import record_fx
+    from app.services.valuation import fees_in, get_fees
+
+    record_fx(session, Currency.TON, Currency.STARS, Decimal("65"), "test")
+    raw = get_fees(session, Market.PORTALS)
+
+    assert raw.currency is Currency.TON
+    assert raw.network_fee == Decimal("0.05")
+
+    in_stars = fees_in(session, raw, Currency.STARS)
+    assert in_stars.currency is Currency.STARS
+    assert in_stars.network_fee == Decimal("3.25")
+
+    # Обратный перевод возвращает исходную сумму — доли не меняются.
+    back = fees_in(session, in_stars, Currency.TON)
+    assert back.network_fee == Decimal("0.05")
+    assert back.sale_fee == raw.sale_fee
+
+
+def test_telegram_fee_needs_no_conversion(session):
+    """У Telegram всё в Stars: приведение ничего не ломает."""
+    from app.enums import Currency
+    from app.services.valuation import fees_in, get_fees
+
+    fees = fees_in(session, get_fees(session, Market.TELEGRAM), Currency.STARS)
+    assert fees.network_fee == Decimal("0")
+    assert fees.sale_fee == Decimal("0.20")

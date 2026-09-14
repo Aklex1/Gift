@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_DOWN, Decimal
 
 from sqlalchemy.orm import Session
@@ -27,12 +27,18 @@ log = logging.getLogger(__name__)
 #: После первой реальной продажи сверьте фактическое зачисление и
 #: заведите новую версию в таблице fee_schedules — иначе весь расчёт
 #: ROI будет смещён (см. docs/OPERATIONS.md).
+#:
+#: Сетевая комиссия указана в валюте площадки: у Portals, MRKT, Tonnel
+#: и Getgems это TON, а не Stars. Считать её как Stars означало бы
+#: занизить издержки в несколько десятков раз, поэтому `get_fees`
+#: приводит её к Stars по актуальному курсу.
 DEFAULT_FEES: dict[Market, dict[str, Decimal]] = {
     Market.TELEGRAM: {
         "sale_fee": Decimal("0.20"),
         "buy_fee": Decimal("0"),
         "royalty": Decimal("0"),
         "network_fee": Decimal("0"),
+        "currency": Currency.STARS,
     },
     # Portals берёт около 2,5% с продавца — заметно меньше Telegram.
     # Площадка периодически объявляет нулевую комиссию, поэтому
@@ -42,24 +48,28 @@ DEFAULT_FEES: dict[Market, dict[str, Decimal]] = {
         "buy_fee": Decimal("0"),
         "royalty": Decimal("0"),
         "network_fee": Decimal("0.05"),
+        "currency": Currency.TON
     },
     Market.MRKT: {
         "sale_fee": Decimal("0.05"),
         "buy_fee": Decimal("0"),
         "royalty": Decimal("0"),
         "network_fee": Decimal("0.1"),
+        "currency": Currency.TON
     },
     Market.TONNEL: {
         "sale_fee": Decimal("0.06"),
         "buy_fee": Decimal("0"),
         "royalty": Decimal("0"),
         "network_fee": Decimal("0.1"),
+        "currency": Currency.TON
     },
     Market.GETGEMS: {
         "sale_fee": Decimal("0.05"),
         "buy_fee": Decimal("0"),
         "royalty": Decimal("0.05"),
         "network_fee": Decimal("0.1"),
+        "currency": Currency.TON
     },
 }
 
@@ -122,6 +132,33 @@ def get_fees(session: Session, market: Market) -> Fees:
     return Fees(**defaults)  # type: ignore[arg-type]
 
 
+def fees_in(session: Session, fees: Fees, currency: Currency) -> Fees:
+    """Выразить комиссии в нужной валюте.
+
+    Доли (sale_fee, royalty, buy_fee) от валюты не зависят, а
+    network_fee — это сумма. У площадок на TON она задана в TON: если
+    считать её Stars, издержки занижаются в десятки раз, а если
+    считать сумму в Stars как TON — завышаются во столько же. Поэтому
+    каждый расчёт говорит, в какой валюте он идёт.
+    """
+    if fees.currency is currency or not fees.network_fee:
+        return replace(fees, currency=currency)
+
+    from app.services import marketdata
+
+    in_stars = marketdata.to_stars(session, fees.network_fee, fees.currency)
+    if in_stars is None:
+        # Курса нет — честнее оставить как есть, чем выдумать число.
+        return fees
+    if currency is Currency.STARS:
+        return replace(fees, network_fee=in_stars, currency=Currency.STARS)
+
+    rate = marketdata.to_stars(session, Decimal(1), currency)
+    if not rate:
+        return fees
+    return replace(fees, network_fee=in_stars / rate, currency=currency)
+
+
 def seed_fee_schedules(session: Session) -> None:
     """Записать версии комиссий по умолчанию, если их ещё нет."""
     for market, values in DEFAULT_FEES.items():
@@ -136,7 +173,7 @@ def seed_fee_schedules(session: Session) -> None:
                 buy_fee=values["buy_fee"],
                 royalty=values["royalty"],
                 network_fee=values["network_fee"],
-                currency=Currency.STARS,
+                currency=values.get("currency", Currency.STARS),
                 is_active=True,
                 note="значения по умолчанию; уточните по фактическим сделкам",
             )
@@ -278,8 +315,9 @@ def evaluate(
     blockers: list[str] = []
     reasons: list[str] = []
 
-    buy_fees = get_fees(session, buy_market)
-    sell_fees = get_fees(session, sell_market)
+    # Весь расчёт ниже — в Stars, поэтому и комиссии приводим к Stars.
+    buy_fees = fees_in(session, get_fees(session, buy_market), Currency.STARS)
+    sell_fees = fees_in(session, get_fees(session, sell_market), Currency.STARS)
 
     # Справедливая цена: медиана надёжнее floor, floor — запасной вариант.
     fair_value = snapshot.median_price or snapshot.floor_price or Decimal(0)
@@ -345,10 +383,19 @@ def evaluate(
 
 
 def break_even_price(
-    session: Session, *, market: Market, cost_basis: Decimal
+    session: Session,
+    *,
+    market: Market,
+    cost_basis: Decimal,
+    currency: Currency = Currency.STARS,
 ) -> Decimal:
-    """Цена, при которой после всех комиссий вернётся себестоимость."""
-    fees = get_fees(session, market)
+    """Цена, при которой после всех комиссий вернётся себестоимость.
+
+    ``cost_basis`` и результат — в ``currency``. Репрайсер работает в
+    валюте площадки (TON), оценка сделки — в Stars, и сетевая комиссия
+    должна быть в той же валюте, иначе к цене в TON прибавляются Stars.
+    """
+    fees = fees_in(session, get_fees(session, market), currency)
     rate = Decimal(1) - fees.total_sale_rate
     if rate <= 0:
         return cost_basis
@@ -367,7 +414,9 @@ def price_floor(
 
     Ниже этой цены репрайсер не опускается никогда.
     """
-    minimum = break_even_price(session, market=market, cost_basis=cost_basis)
+    minimum = break_even_price(
+        session, market=market, cost_basis=cost_basis, currency=currency
+    )
     return round_price(minimum * floor_ratio, currency)
 
 

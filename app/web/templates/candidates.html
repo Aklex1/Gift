@@ -70,6 +70,32 @@
   <div class="scan-note warn-text">{{ report.note }}</div>
   {% endif %}
 
+  {% if report.spreads %}
+  <div class="scan-reject">
+    <div class="muted">
+      Разница цен между площадками (после комиссий и переноса подарка).
+      Сделка <b>не автоматическая</b>: подарок нужно перевести вручную,
+      и за это время цена на второй площадке может уйти.
+    </div>
+    <table class="reject">
+      <tr>
+        <th>Подарок</th><th>Купить</th><th>Продать</th>
+        <th class="num">Прибыль</th><th class="num">ROI</th>
+      </tr>
+      {% for s in report.spreads %}
+      <tr>
+        <td>{{ s.kind }}</td>
+        <td>{{ s.buy_market }} — {{ s.buy_price_native }}</td>
+        <td>{{ s.sell_market }} — {{ s.sell_price_stars }} Stars
+          <span class="muted">({{ s.sell_side_listings }} лот.)</span></td>
+        <td class="num">{{ s.net_profit_stars }}</td>
+        <td class="num">{{ s.net_roi }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
   {% if rejections %}
   <div class="scan-reject">
     <div class="muted">Почему лоты не прошли отбор:</div>

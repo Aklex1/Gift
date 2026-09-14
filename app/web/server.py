@@ -440,7 +440,7 @@ async def trading_page(
     from app.adapters.registry import get_adapter
     from app.services import runtime
 
-    from app.services import fx, limits, notify
+    from app.services import arbitrage, fx, limits, notify
 
     state = runtime.snapshot()
     with session_scope() as session:
@@ -485,6 +485,11 @@ async def trading_page(
                 secrets_module.resolve("BOT_TOKEN", settings.bot_token)
                 and secrets_module.resolve("OWNER_IDS", settings.owner_ids).strip()
             ),
+            "arb": {
+                "enabled": arbitrage.enabled(),
+                "min_roi_pct": arbitrage.min_roi() * 100,
+                "transfer_ton": arbitrage.transfer_cost_ton(),
+            },
             "saved": saved,
         },
     )
@@ -977,6 +982,37 @@ async def trading_notify(
         mark = "отправлено" if ok else "не отправлено — проверьте токен и владельцев"
         return RedirectResponse(f"/trading?saved=Пробное сообщение {mark}", status_code=303)
     return RedirectResponse("/trading?saved=Уведомления сохранены", status_code=303)
+
+
+@app.post("/trading/arbitrage")
+async def trading_arbitrage(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Настроить поиск разницы цен между площадками."""
+    from app.services import arbitrage, store
+
+    form = await request.form()
+    arbitrage.set_enabled(bool(form.get("enabled")))
+
+    raw_roi = str(form.get("min_roi") or "").strip().replace(",", ".")
+    if raw_roi:
+        try:
+            value = Decimal(raw_roi) / 100
+            if 0 < value < 10:
+                store.set(arbitrage.KEY_MIN_ROI, str(value))
+        except (InvalidOperation, ValueError):
+            pass
+
+    raw_transfer = str(form.get("transfer_ton") or "").strip().replace(",", ".")
+    if raw_transfer:
+        try:
+            value = Decimal(raw_transfer)
+            if 0 <= value < 100:
+                store.set(arbitrage.KEY_TRANSFER_TON, str(value))
+        except (InvalidOperation, ValueError):
+            pass
+
+    return RedirectResponse("/trading?saved=Поиск разницы цен сохранён", status_code=303)
 
 
 @app.post("/trading/fx")

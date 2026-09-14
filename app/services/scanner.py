@@ -33,6 +33,7 @@ from app.db import session_scope
 from app.enums import Currency, Market
 from app.models import Candidate, utcnow
 from app.services import gifts as gifts_service
+from app.services import arbitrage
 from app.services import marketdata, strategy as strategy_service, valuation
 from app.services.marketdata import MarketSnapshot
 
@@ -253,15 +254,28 @@ async def snapshot_for_listing(
                 data = await floors(dto.gift.collection)
                 model_floor = (data.get("models") or {}).get(dto.gift.model)
                 if model_floor:
-                    return marketdata.snapshot_from_attribute_floor(
-                        collection=dto.gift.collection,
-                        model=dto.gift.model,
-                        model_floor=model_floor,
-                        collection_floor=to_decimal_or_none(
-                            (dto.raw or {}).get("floor_price")
-                        ),
-                        listed_count=len(data.get("models") or {}),
+                    # Portals отдаёт floor в TON, а вся оценка сделки
+                    # идёт в Stars. Без приведения справедливая цена
+                    # оказывалась в 65 раз ниже цены покупки, и любой
+                    # лот выглядел безнадёжно переоценённым.
+                    floor_stars = marketdata.to_stars(
+                        session, Decimal(str(model_floor)), Currency.TON
                     )
+                    collection_floor = to_decimal_or_none(
+                        (dto.raw or {}).get("floor_price")
+                    )
+                    if collection_floor is not None:
+                        collection_floor = marketdata.to_stars(
+                            session, collection_floor, Currency.TON
+                        )
+                    if floor_stars:
+                        return marketdata.snapshot_from_attribute_floor(
+                            collection=dto.gift.collection,
+                            model=dto.gift.model,
+                            model_floor=floor_stars,
+                            collection_floor=collection_floor,
+                            listed_count=len(data.get("models") or {}),
+                        )
             except Exception as exc:  # noqa: BLE001 - откат на историю
                 log.debug("Portals: floor модели недоступен: %s", exc)
 
@@ -361,6 +375,21 @@ async def scan_once() -> dict:
             rejections.update(reasons)
         except Exception as exc:  # noqa: BLE001 - один лот не роняет скан
             log.exception("Ошибка оценки лота %s: %s", dto.external_id, exc)
+
+    # --- разница цен между площадками ---
+    # Считается отдельно от кандидатов: связка требует ручного
+    # переноса подарка, поэтому она подсказка владельцу, а не заявка
+    # на исполнение.
+    if arbitrage.enabled():
+        with session_scope() as session:
+            spreads = arbitrage.find(session, all_listings)
+        report["spreads"] = [s.as_dict() for s in spreads[:20]]
+        if spreads:
+            log.info(
+                "Разница цен между площадками: %s связок, лучшая %.1f%%",
+                len(spreads),
+                float(spreads[0].net_roi) * 100,
+            )
 
     report["candidates"] = created
     report["rejections"] = dict(rejections)
