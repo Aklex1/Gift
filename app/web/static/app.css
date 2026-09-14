@@ -196,3 +196,40 @@ button.danger-btn { background: var(--neg); }
 table.reject { margin-top: 6px; font-size: 13px; }
 table.reject td { padding: 5px 10px; }
 table.reject td.num { text-align: right; color: var(--muted); width: 60px; }
+
+/* --- стратегии --- */
+.strategy {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); padding: 16px 18px; margin-bottom: 10px;
+}
+.strategy-head {
+  display: flex; align-items: baseline; gap: 14px;
+  flex-wrap: wrap; margin-bottom: 4px;
+}
+.strategy h3 {
+  font-size: 13px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .04em; margin: 20px 0 6px;
+}
+.strategy table.settings { background: transparent; border: none; }
+.strategy table.settings td { border-bottom: 1px solid var(--border); }
+.pct { display: inline-flex; align-items: center; gap: 6px; }
+.pct input, input.narrow { width: 90px; }
+label.inline {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-right: 14px; font-weight: 400; font-size: 14px;
+}
+select {
+  padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: #11141a; color: var(--text); font-size: 14px; font-family: inherit;
+}
+.inline-form { display: inline-flex; align-items: center; gap: 5px; }
+input.tiny {
+  width: 56px; padding: 4px 7px; border-radius: 6px; font-size: 13px;
+  border: 1px solid var(--border); background: #11141a; color: var(--text);
+  font-family: inherit; text-align: right;
+}
+button.mini {
+  padding: 4px 9px; font-size: 12px; border-radius: 6px;
+  background: #2a2f3a; color: var(--text);
+}
+button.mini:hover { background: var(--accent); }

@@ -90,7 +90,10 @@ def strategy_actions(strategy_id: int, enabled: bool) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="🎚 Режим", callback_data=f"strmode:{strategy_id}"
-                )
+                ),
+                InlineKeyboardButton(
+                    text="📈 Мин. ROI", callback_data=f"strroi:{strategy_id}"
+                ),
             ],
         ]
     )

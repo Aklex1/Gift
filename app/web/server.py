@@ -7,17 +7,18 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import secrets
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from sqlalchemy import func
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 
 from app.adapters.registry import capability_matrix, probe_all
 from app.config import settings
@@ -185,6 +186,20 @@ async def candidates_page(
         )
 
     report = scanner.last_report()
+    stale = False
+    age_sec = None
+    if report:
+        # Отчёт старше трёх интервалов означает, что воркер молчит.
+        stamp = report.get("finished_at") or report.get("started_at")
+        if stamp:
+            try:
+                age_sec = int(
+                    (utcnow() - dt.datetime.fromisoformat(stamp)).total_seconds()
+                )
+                stale = age_sec > settings.scan_interval_sec * 3
+            except (ValueError, TypeError):
+                pass
+
     rejections = []
     if report:
         for key, count in sorted(
@@ -200,6 +215,8 @@ async def candidates_page(
         context={
             "items": items,
             "report": report,
+            "stale": stale,
+            "age_sec": age_sec,
             "rejections": rejections,
             "states": recent_states,
             "scan_interval": settings.scan_interval_sec,
@@ -656,6 +673,253 @@ async def accounts_verify(
     return RedirectResponse(
         f"/accounts?saved={mark} {result.get('detail')}", status_code=303
     )
+
+
+@app.post("/strategies/{strategy_id}/roi")
+async def strategies_quick_roi(
+    strategy_id: int, request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Быстро поменять минимальный ROI, не открывая полную форму."""
+    from app.models import Strategy
+
+    form = await request.form()
+    raw = str(form.get("min_roi") or "").strip().replace(",", ".")
+    back = str(form.get("back") or "/")
+    try:
+        percent = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return RedirectResponse(back, status_code=303)
+
+    with session_scope() as session:
+        item = session.get(Strategy, strategy_id)
+        if item is not None:
+            item.min_roi = percent / 100
+            session.add(
+                AuditLog(
+                    actor="web",
+                    action="strategy.min_roi",
+                    target=item.name,
+                    payload={"min_roi": str(item.min_roi)},
+                )
+            )
+    return RedirectResponse(back, status_code=303)
+
+
+@app.get("/strategies", response_class=HTMLResponse)
+async def strategies_page(
+    request: Request, saved: str = "", _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Редактирование торговых стратегий."""
+    from app.enums import Confidence, Market, TradeMode
+    from app.models import Account, Budget, Strategy
+    from app.services import runtime
+    from app.services import strategy as strategy_service
+
+    with session_scope() as session:
+        accounts = [
+            {"id": a.id, "name": a.name}
+            for a in session.query(Account).order_by(Account.id).all()
+        ]
+        rows = []
+        for item in (
+            session.query(Strategy).order_by(Strategy.priority.desc()).all()
+        ):
+            budget = session.get(Budget, item.budget_id) if item.budget_id else None
+            rows.append(
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "enabled": item.is_enabled,
+                    "mode": item.mode.value,
+                    "priority": item.priority,
+                    "markets": [str(m) for m in (item.markets or [])],
+                    "collections": ", ".join(item.collections or []),
+                    "models": ", ".join(item.models or []),
+                    "min_price": item.min_price_stars,
+                    "max_price": item.max_price_stars,
+                    "min_roi": Decimal(item.min_roi or 0) * 100,
+                    "max_risk": item.max_risk,
+                    "min_confidence": item.min_confidence.value,
+                    "sell_markup": Decimal(item.sell_markup or 0) * 100,
+                    "reprice_step": Decimal(item.reprice_step or 0) * 100,
+                    "reprice_cooldown_h": item.reprice_cooldown_h,
+                    "floor_ratio": (Decimal(item.floor_ratio or 1) - 1) * 100,
+                    "max_open_positions": item.max_open_positions,
+                    "account_id": item.account_id,
+                    "budget_cap": Decimal(budget.hard_cap) if budget else Decimal(0),
+                    "budget_currency": budget.currency.value if budget else "STARS",
+                    "budget_available": budget.available if budget else Decimal(0),
+                    "open_positions": strategy_service.open_positions_count(
+                        session, item.id
+                    ),
+                }
+            )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="strategies.html",
+        context={
+            "strategies": rows,
+            "accounts": accounts,
+            "all_markets": [m.value for m in Market],
+            "modes": [m.value for m in TradeMode],
+            "confidences": [c.value for c in Confidence],
+            "global_mode": runtime.mode().value,
+            "saved": saved,
+            "fmt": gifts_service.format_stars,
+            "amount": gifts_service.format_amount,
+        },
+    )
+
+
+@app.post("/strategies/new")
+async def strategies_new(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Создать стратегию."""
+    from app.services import strategy as strategy_service
+
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    if not name:
+        return RedirectResponse("/strategies?saved=Укажите имя", status_code=303)
+
+    with session_scope() as session:
+        strategy_service.create_strategy(session, name=name)
+    return RedirectResponse(
+        f"/strategies?saved=Стратегия {name} создана (выключена)", status_code=303
+    )
+
+
+@app.post("/strategies/{strategy_id}")
+async def strategies_save(
+    strategy_id: int, request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Сохранить параметры стратегии."""
+    from app.enums import Confidence, TradeMode
+    from app.models import Budget, Strategy
+
+    form = await request.form()
+
+    def num(field: str, default: Decimal | None = None) -> Decimal | None:
+        """Число из формы; None, если поле пустое или неверное."""
+        raw = str(form.get(field) or "").strip().replace(",", ".")
+        if not raw:
+            return default
+        try:
+            return Decimal(raw)
+        except (InvalidOperation, ValueError):
+            return default
+
+    def csv(field: str) -> list[str]:
+        """Список значений через запятую."""
+        raw = str(form.get(field) or "")
+        return [x.strip() for x in raw.split(",") if x.strip()]
+
+    with session_scope() as session:
+        item = session.get(Strategy, strategy_id)
+        if item is None:
+            return RedirectResponse("/strategies", status_code=303)
+
+        item.is_enabled = bool(form.get("enabled"))
+        raw_mode = str(form.get("mode") or "").strip().lower()
+        if raw_mode in {m.value for m in TradeMode}:
+            item.mode = TradeMode(raw_mode)
+
+        item.markets = form.getlist("markets") or []
+        item.collections = csv("collections")
+        item.models = csv("models")
+
+        item.min_price_stars = num("min_price")
+        item.max_price_stars = num("max_price")
+
+        # Проценты в форме удобнее, внутри храним доли.
+        roi = num("min_roi")
+        if roi is not None:
+            item.min_roi = roi / 100
+        risk = num("max_risk")
+        if risk is not None:
+            item.max_risk = int(risk)
+        raw_conf = str(form.get("min_confidence") or "").strip().lower()
+        if raw_conf in {c.value for c in Confidence}:
+            item.min_confidence = Confidence(raw_conf)
+
+        markup = num("sell_markup")
+        if markup is not None:
+            item.sell_markup = markup / 100
+        step = num("reprice_step")
+        if step is not None:
+            item.reprice_step = step / 100
+        cooldown = num("reprice_cooldown_h")
+        if cooldown is not None:
+            item.reprice_cooldown_h = int(cooldown)
+        floor = num("floor_ratio")
+        if floor is not None:
+            item.floor_ratio = Decimal(1) + floor / 100
+
+        positions = num("max_open_positions")
+        if positions is not None:
+            item.max_open_positions = int(positions)
+        priority = num("priority")
+        if priority is not None:
+            item.priority = int(priority)
+
+        raw_account = str(form.get("account_id") or "").strip()
+        item.account_id = int(raw_account) if raw_account.isdigit() else None
+
+        budget = session.get(Budget, item.budget_id) if item.budget_id else None
+        if budget is not None:
+            cap = num("budget_cap")
+            if cap is not None:
+                budget.hard_cap = cap
+            raw_currency = str(form.get("budget_currency") or "").strip().upper()
+            if raw_currency in {"STARS", "TON"}:
+                from app.enums import Currency
+
+                budget.currency = Currency(raw_currency)
+
+        # Включение при нулевом бюджете — частая ошибка: покупать не на что.
+        if item.is_enabled and (budget is None or Decimal(budget.hard_cap) <= 0):
+            item.is_enabled = False
+            name = item.name
+            session.add(
+                AuditLog(actor="web", action="strategy.save", target=name, ok=False)
+            )
+            return RedirectResponse(
+                f"/strategies?saved=Стратегия {name}: задайте бюджет, "
+                f"иначе включать нечего",
+                status_code=303,
+            )
+
+        name = item.name
+        session.add(
+            AuditLog(
+                actor="web",
+                action="strategy.save",
+                target=name,
+                payload={"enabled": item.is_enabled, "min_roi": str(item.min_roi)},
+            )
+        )
+
+    return RedirectResponse(
+        f"/strategies?saved=Стратегия {name} сохранена", status_code=303
+    )
+
+
+@app.post("/strategies/{strategy_id}/delete")
+async def strategies_delete(
+    strategy_id: int, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Удалить стратегию."""
+    from app.models import Strategy
+
+    with session_scope() as session:
+        item = session.get(Strategy, strategy_id)
+        if item is not None:
+            name = item.name
+            session.delete(item)
+            session.add(AuditLog(actor="web", action="strategy.delete", target=name))
+    return RedirectResponse("/strategies?saved=Стратегия удалена", status_code=303)
 
 
 @app.get("/audit", response_class=HTMLResponse)

@@ -4,12 +4,13 @@
 <h1>Кандидаты</h1>
 <p class="muted">Подтверждение покупки выполняется в Telegram-боте.</p>
 
-<div class="scan {{ 'stale' if not report }}">
+<div class="scan {{ 'stale' if not report or stale }}">
   <div class="scan-head">
     <b>Сканер</b>
     {% if report %}
       <span class="muted">
-        последний проход: {{ report.finished_at or report.started_at }} UTC ·
+        последний проход: {{ report.finished_at or report.started_at }} UTC
+        {% if age_sec is not none %}({{ age_sec }} c назад){% endif %} ·
         интервал {{ scan_interval }} c
       </span>
     {% else %}
@@ -45,6 +46,22 @@
   <div class="scan-note warn-text">
     Ни одна стратегия не включена — сканер не запускается.
     Откройте бота: <b>⚙️ Стратегии</b> → задайте бюджет → включите.
+  </div>
+  {% endif %}
+
+  {% if stale %}
+  <div class="scan-note warn-text">
+    <b>Отчёт устарел.</b> Сканер должен обновлять его раз в
+    {{ scan_interval }} c, но данные старше. Скорее всего воркер
+    остановлен или падает:<br>
+    <code>systemctl status gift-worker</code><br>
+    <code>journalctl -u gift-worker -n 50 --no-pager</code>
+  </div>
+  {% endif %}
+
+  {% if report.error %}
+  <div class="scan-note warn-text">
+    <b>Последний проход сорвался:</b> {{ report.error }}
   </div>
   {% endif %}
 

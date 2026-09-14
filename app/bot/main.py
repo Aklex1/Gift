@@ -479,6 +479,32 @@ async def cb_strategy_budget(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@dp.callback_query(F.data.startswith("strroi:"))
+async def cb_strategy_roi(call: CallbackQuery) -> None:
+    """Запросить новый минимальный ROI."""
+    if not is_owner(call.from_user.id if call.from_user else None):
+        await deny(call)
+        return
+    sid = int(call.data.split(":")[1])
+    with session_scope() as session:
+        strategy = session.get(Strategy, sid)
+        if strategy is None:
+            await call.answer("Не найдена", show_alert=True)
+            return
+        current = Decimal(strategy.min_roi or 0) * 100
+        name = strategy.name
+
+    _pending_input[call.from_user.id] = ("roi", sid)
+    await call.message.answer(
+        f"<b>{name}</b>: минимальный ROI сейчас <b>{current:.0f}%</b>\n\n"
+        "Пришлите новое значение в процентах — например <code>20</code>.\n\n"
+        "Это чистая прибыль после комиссий. На Portals комиссия около "
+        "2,5%, на Telegram — около 20%, поэтому для одного и того же "
+        "ROI на Telegram нужна заметно бо́льшая скидка от рынка."
+    )
+    await call.answer()
+
+
 @dp.callback_query(F.data.startswith("strmode:"))
 async def cb_strategy_mode(call: CallbackQuery) -> None:
     """Выбор режима стратегии."""
@@ -637,6 +663,32 @@ async def on_number(message: Message) -> None:
             f"Бюджет стратегии <b>{name}</b>: "
             f"{gifts_service.format_stars(value)} Stars.\n"
             "Больше этой суммы стратегия не потратит."
+        )
+    elif action == "roi":
+        if value <= 0 or value >= 100:
+            await message.answer(
+                "ROI задаётся в процентах: осмысленный диапазон 5–80."
+            )
+            return
+        with session_scope() as session:
+            strategy = session.get(Strategy, target_id)
+            if strategy is None:
+                await message.answer("Стратегия не найдена")
+                return
+            strategy.min_roi = value / 100
+            name = strategy.name
+            session.add(
+                AuditLog(
+                    actor=str(user_id),
+                    action="strategy.min_roi",
+                    target=name,
+                    payload={"min_roi": str(strategy.min_roi)},
+                )
+            )
+        await message.answer(
+            f"Стратегия <b>{name}</b>: минимальный ROI теперь "
+            f"<b>{value:.0f}%</b>.\n"
+            "Применится со следующего прохода сканера."
         )
     elif action == "listprice":
         result = await executor.execute_list(

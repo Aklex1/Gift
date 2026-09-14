@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}Стратегии — Gift{% endblock %}
+{% block content %}
+<h1>Стратегии</h1>
+
+{% if saved %}
+<div class="banner ok"><div>{{ saved }}</div></div>
+{% endif %}
+
+<p class="muted">
+  Стратегия решает, что покупать и по какой цене продавать. Глобальный
+  режим сейчас <b>{{ global_mode|upper }}</b> — он ограничивает стратегии
+  сверху: в SAFE ни одна не купит, даже если у неё стоит AUTO.
+</p>
+
+{% for s in strategies %}
+<form method="post" action="/strategies/{{ s.id }}" class="strategy">
+  <div class="strategy-head">
+    <label class="switch">
+      <input type="checkbox" name="enabled" {{ 'checked' if s.enabled }}>
+      <b>{{ s.name }}</b>
+    </label>
+    <span class="muted">
+      открыто позиций: {{ s.open_positions }} / {{ s.max_open_positions }} ·
+      бюджет {{ amount(s.budget_cap) }} {{ s.budget_currency }}
+      (свободно {{ amount(s.budget_available) }})
+    </span>
+  </div>
+
+  <h3>Что покупать</h3>
+  <table class="settings">
+    <tr>
+      <td class="skey"><label>Минимальный ROI</label>
+        <div class="muted hint">
+          Чистая прибыль после комиссий. 20% на Portals — это скидка около
+          22% от рынка; на Telegram при комиссии 20% нужна скидка почти
+          вдвое больше.
+        </div></td>
+      <td class="sval"><span class="pct">
+        <input type="text" name="min_roi" value="{{ '%.0f'|format(s.min_roi|float) }}"
+               inputmode="decimal"><span class="unit">%</span></span></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Максимальный риск</label>
+        <div class="muted hint">0–100. Выше 60 — данных мало либо площадка без гарантий.</div></td>
+      <td class="sval"><input type="text" name="max_risk" value="{{ s.max_risk }}"
+             inputmode="numeric"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Качество данных не ниже</label>
+        <div class="muted hint">Чем выше требование, тем меньше находок, но точнее оценка.</div></td>
+      <td class="sval">
+        <select name="min_confidence">
+          {% for c in confidences %}
+          <option value="{{ c }}" {{ 'selected' if c == s.min_confidence }}>{{ c }}</option>
+          {% endfor %}
+        </select></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Площадки</label>
+        <div class="muted hint">Где искать лоты.</div></td>
+      <td class="sval">
+        {% for m in all_markets %}
+        <label class="inline"><input type="checkbox" name="markets" value="{{ m }}"
+               {{ 'checked' if m in s.markets }}> {{ m }}</label>
+        {% endfor %}</td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Коллекции</label>
+        <div class="muted hint">Через запятую. Пусто — любые.</div></td>
+      <td class="sval"><input type="text" name="collections" value="{{ s.collections }}"
+             placeholder="Lol Pop, Lunar Snake"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Цена лота, Stars</label>
+        <div class="muted hint">Коридор отбора. Пусто — без ограничения.</div></td>
+      <td class="sval">
+        от <input type="text" name="min_price" class="narrow"
+               value="{{ s.min_price if s.min_price else '' }}">
+        до <input type="text" name="max_price" class="narrow"
+               value="{{ s.max_price if s.max_price else '' }}"></td>
+    </tr>
+  </table>
+
+  <h3>Как продавать</h3>
+  <table class="settings">
+    <tr>
+      <td class="skey"><label>Наценка на старте</label>
+        <div class="muted hint">Насколько выше рынка выставить сначала. Дальше цена снижается.</div></td>
+      <td class="sval"><span class="pct">
+        <input type="text" name="sell_markup" value="{{ '%.0f'|format(s.sell_markup|float) }}"
+               inputmode="decimal"><span class="unit">%</span></span></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Шаг снижения</label>
+        <div class="muted hint">На сколько дешевле за один шаг.</div></td>
+      <td class="sval"><span class="pct">
+        <input type="text" name="reprice_step" value="{{ '%.0f'|format(s.reprice_step|float) }}"
+               inputmode="decimal"><span class="unit">%</span></span></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Пауза между снижениями</label>
+        <div class="muted hint">Часов. Меньше — продаётся быстрее и дешевле.</div></td>
+      <td class="sval"><input type="text" name="reprice_cooldown_h"
+             value="{{ s.reprice_cooldown_h }}" inputmode="numeric"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Минимальная маржа</label>
+        <div class="muted hint">Запас над безубыточностью. Ниже цена не опустится никогда.</div></td>
+      <td class="sval"><span class="pct">
+        <input type="text" name="floor_ratio" value="{{ '%.0f'|format(s.floor_ratio|float) }}"
+               inputmode="decimal"><span class="unit">%</span></span></td>
+    </tr>
+  </table>
+
+  <h3>Ограничения</h3>
+  <table class="settings">
+    <tr>
+      <td class="skey"><label>Бюджет</label>
+        <div class="muted hint">Жёсткий потолок вложений. Для Portals и MRKT — в TON.</div></td>
+      <td class="sval">
+        <input type="text" name="budget_cap" class="narrow"
+               value="{{ amount(s.budget_cap) }}">
+        <select name="budget_currency">
+          <option value="STARS" {{ 'selected' if s.budget_currency == 'STARS' }}>STARS</option>
+          <option value="TON" {{ 'selected' if s.budget_currency == 'TON' }}>TON</option>
+        </select></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Максимум позиций</label>
+        <div class="muted hint">Сколько подарков держать одновременно.</div></td>
+      <td class="sval"><input type="text" name="max_open_positions"
+             value="{{ s.max_open_positions }}" inputmode="numeric"></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Режим стратегии</label>
+        <div class="muted hint">Не может быть смелее глобального режима.</div></td>
+      <td class="sval">
+        <select name="mode">
+          {% for m in modes %}
+          <option value="{{ m }}" {{ 'selected' if m == s.mode }}>{{ m|upper }}</option>
+          {% endfor %}
+        </select></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Аккаунт</label>
+        <div class="muted hint">Торговать только с него. Пусто — с любого доступного.</div></td>
+      <td class="sval">
+        <select name="account_id">
+          <option value="">любой</option>
+          {% for a in accounts %}
+          <option value="{{ a.id }}" {{ 'selected' if a.id == s.account_id }}>{{ a.name }}</option>
+          {% endfor %}
+        </select></td>
+    </tr>
+    <tr>
+      <td class="skey"><label>Приоритет</label>
+        <div class="muted hint">Больше — раньше получает деньги при конкуренции.</div></td>
+      <td class="sval"><input type="text" name="priority" value="{{ s.priority }}"
+             inputmode="numeric"></td>
+    </tr>
+  </table>
+
+  <div class="actions">
+    <button type="submit">Сохранить</button>
+  </div>
+</form>
+<form method="post" action="/strategies/{{ s.id }}/delete" class="actions"
+      onsubmit="return confirm('Удалить стратегию {{ s.name }}?')">
+  <button type="submit" class="danger-btn">Удалить стратегию</button>
+</form>
+{% else %}
+<div class="banner ok"><div>Стратегий нет. Создайте первую ниже.</div></div>
+{% endfor %}
+
+<h2>Новая стратегия</h2>
+<form method="post" action="/strategies/new">
+  <table class="settings">
+    <tr>
+      <td class="skey"><label for="s-name">Имя</label>
+        <div class="muted hint">Создаётся выключенной, с нулевым бюджетом.</div></td>
+      <td class="sval"><input type="text" id="s-name" name="name" required
+             placeholder="portals-flip"></td>
+    </tr>
+  </table>
+  <div class="actions"><button type="submit">Создать</button></div>
+</form>
+{% endblock %}

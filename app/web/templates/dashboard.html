@@ -117,6 +117,10 @@
 </table>
 
 <h2>Стратегии</h2>
+<p class="muted">
+  Минимальный ROI можно поправить прямо здесь. Остальные параметры —
+  на странице <a href="/strategies">Стратегии</a>.
+</p>
 <table>
   <tr><th>Имя</th><th>Состояние</th><th>Режим</th><th>Площадки</th><th>Мин. ROI</th><th>Макс. риск</th></tr>
   {% for s in strategies %}
@@ -125,7 +129,15 @@
     <td>{{ '▶️ включена' if s.enabled else '⏸ выключена' }}</td>
     <td><span class="tag {{ s.mode }}">{{ s.mode|upper }}</span></td>
     <td>{{ s.markets or '—' }}</td>
-    <td>{{ '%.0f'|format(s.min_roi) }}%</td>
+    <td>
+      <form method="post" action="/strategies/{{ s.id }}/roi" class="inline-form">
+        <input type="hidden" name="back" value="/">
+        <input type="text" name="min_roi" value="{{ '%.0f'|format(s.min_roi) }}"
+               inputmode="decimal" class="tiny" aria-label="Минимальный ROI">
+        <span class="unit">%</span>
+        <button type="submit" class="mini">✓</button>
+      </form>
+    </td>
     <td>{{ s.max_risk }}</td>
   </tr>
   {% else %}

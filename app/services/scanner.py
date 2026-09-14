@@ -68,6 +68,24 @@ def save_report(report: dict) -> None:
         log.debug("Не удалось сохранить отчёт скана: %s", exc)
 
 
+def save_failure(exc: BaseException) -> None:
+    """Записать, что проход сорвался, вместе с причиной."""
+    save_report(
+        {
+            "listings": 0,
+            "facts": 0,
+            "candidates": 0,
+            "markets": {},
+            "rejections": {},
+            "strategies": [],
+            "started_at": utcnow().isoformat(timespec="seconds"),
+            "finished_at": utcnow().isoformat(timespec="seconds"),
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "note": "проход сорвался с ошибкой — смотрите journalctl -u gift-worker",
+        }
+    )
+
+
 def last_report() -> dict | None:
     """Отчёт о последнем проходе сканера."""
     import json

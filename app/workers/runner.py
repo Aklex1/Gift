@@ -47,8 +47,21 @@ async def _guarded(name: str, coro_factory) -> None:
 
 
 async def task_scan() -> None:
-    """Проход сканера рынков."""
-    await _guarded("scan", scanner.scan_once)
+    """Проход сканера рынков.
+
+    Ошибку прохода надо не только записать в журнал, но и показать в
+    панели: иначе там останется висеть старый отчёт, и по нему будет
+    казаться, что сканер просто ничего не нашёл.
+    """
+
+    async def run() -> None:
+        try:
+            await scanner.scan_once()
+        except Exception as exc:  # noqa: BLE001 - сообщаем и продолжаем
+            scanner.save_failure(exc)
+            raise
+
+    await _guarded("scan", run)
 
 
 async def task_reprice() -> None:
