@@ -137,14 +137,11 @@ async def refresh_fx(session: Session) -> Decimal | None:
     # допущение снапшотом, чтобы расчёты были воспроизводимы.
     rate = marketdata.latest_fx(session, Currency.TON, Currency.STARS)
     if rate is None:
-        rate = marketdata.DEFAULT_STARS_PER_TON
-        marketdata.record_fx(
-            session, Currency.TON, Currency.STARS, rate, source="default"
-        )
+        # Курс обновляет отдельная задача из реальных источников;
+        # подменять его здесь значило бы закрепить неверное значение.
         log.warning(
-            "Курс TON->Stars не задан, зафиксировано значение по умолчанию %s. "
-            "Уточните его в настройках для корректного кросс-рыночного ROI.",
-            rate,
+            "Курс TON->Stars ещё не получен. Расчёты приблизительны, "
+            "пока не отработает обновление курсов."
         )
     return rate
 

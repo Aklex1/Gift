@@ -26,9 +26,14 @@ log = logging.getLogger(__name__)
 FRESH_WINDOW = dt.timedelta(days=14)
 #: Порог отсечения выбросов в медианных абсолютных отклонениях.
 MAD_THRESHOLD = Decimal("3.5")
-#: Курс Stars к TON по умолчанию, если снапшота ещё нет.
-#: Обновляется реальным снапшотом при первом же скане.
-DEFAULT_STARS_PER_TON = Decimal("400")
+#: Курс Stars за TON на случай, когда снапшота ещё нет.
+#:
+#: Это грубая оценка, а не факт. Прежнее значение 400 было завышено
+#: примерно в шесть раз и искажало все кросс-валютные расчёты: цена
+#: лота в TON выглядела кратно дороже, чем есть. Настоящий курс
+#: считает app.services.fx из курса TON и официальной цены Stars;
+#: значение ниже используется только до первого успешного обновления.
+DEFAULT_STARS_PER_TON = Decimal("65")
 
 
 # ----------------------------------------------------------------------
@@ -81,7 +86,11 @@ def to_stars(session: Session, amount: Decimal, currency: Currency) -> Decimal |
     rate = latest_fx(session, currency, Currency.STARS)
     if rate is None:
         if currency is Currency.TON:
-            log.warning("Нет FX-снапшота TON->STARS, беру значение по умолчанию")
+            log.warning(
+                "Нет FX-снапшота TON->STARS, беру грубую оценку %s. "
+                "Расчёты приблизительны до обновления курса.",
+                DEFAULT_STARS_PER_TON,
+            )
             rate = DEFAULT_STARS_PER_TON
         else:
             return None

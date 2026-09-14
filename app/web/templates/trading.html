@@ -130,6 +130,48 @@
   </div>
 </form>
 
+<h2>Курсы валют</h2>
+<form method="post" action="/trading/fx">
+  <table>
+    <tr><th>Пара</th><th>Курс</th><th>Источник</th><th>Обновлено</th></tr>
+    {% for r in fx.pairs %}
+    <tr>
+      <td>{{ r.title }}</td>
+      <td>{% if r.rate is not none %}<b>{{ '%.4f'|format(r.rate|float) }}</b>
+          {% else %}<span class="neg">нет данных</span>{% endif %}</td>
+      <td class="muted">{{ r.source or '—' }}</td>
+      <td class="muted">{{ r.at.strftime('%d.%m %H:%M') if r.at else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <div class="market" style="margin-top:12px">
+    <label class="cap">
+      Цена звезды, если Telegram недоступен
+      <input type="text" name="star_usd" inputmode="decimal"
+             value="{{ '%.4f'|format(fx.report.star_usd|float) if fx.report and fx.report.star_usd else '' }}"
+             placeholder="0.02">
+      <span class="unit">USD</span>
+    </label>
+    <label class="cap">
+      Спред
+      <input type="text" name="spread" inputmode="decimal"
+             value="{{ '%.0f'|format(fx.spread|float * 100) }}">
+      <span class="unit">%</span>
+    </label>
+    <div class="market-state muted">
+      Курс Stars к TON выводится из курса TON и официальной цены звёзд
+      в Telegram. Спред занижает курс, чтобы сделка не выглядела
+      выгоднее, чем есть. Без реального курса кросс-валютные расчёты
+      приблизительны.
+    </div>
+  </div>
+
+  <div class="actions">
+    <button type="submit" name="refresh" value="1">Сохранить и обновить курс</button>
+  </div>
+</form>
+
 <h2>Порядок проверки перед первой сделкой</h2>
 <ol class="checklist muted">
   <li>Токен площадки задан в разделе «Настройки».</li>

@@ -96,6 +96,17 @@ async def task_balances() -> None:
     await _guarded("balances", run)
 
 
+async def task_fx() -> None:
+    """Обновить курсы валют из внешних источников."""
+
+    async def run() -> None:
+        from app.services import fx
+
+        await fx.refresh()
+
+    await _guarded("fx", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -130,8 +141,12 @@ async def main() -> None:
     )
     scheduler.add_job(task_inventory, "interval", seconds=600, id="inventory")
     scheduler.add_job(task_balances, "interval", seconds=300, id="balances")
+    scheduler.add_job(task_fx, "interval", seconds=900, id="fx")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     scheduler.start()
+
+    # Курсы нужны сразу: без них первые же расчёты будут приблизительными.
+    await task_fx()
 
     log.info(
         "Воркеры запущены: скан %s c, репрайс %s c, сверка %s c",

@@ -411,11 +411,12 @@ async def trading_page(
     from app.adapters.registry import get_adapter
     from app.services import runtime
 
-    from app.services import limits
+    from app.services import fx, limits
 
     state = runtime.snapshot()
     with session_scope() as session:
         daily = limits.snapshot(session)
+        rates = fx.snapshot(session)
     markets = []
     for name, item in state["markets"].items():
         market = item["market"]
@@ -448,6 +449,7 @@ async def trading_page(
             "experimental_auto": state["allow_experimental_auto"],
             "markets": markets,
             "daily_total": daily["total"],
+            "fx": rates,
             "saved": saved,
         },
     )
@@ -920,6 +922,38 @@ async def strategies_delete(
             session.delete(item)
             session.add(AuditLog(actor="web", action="strategy.delete", target=name))
     return RedirectResponse("/strategies?saved=Стратегия удалена", status_code=303)
+
+
+@app.post("/trading/fx")
+async def trading_fx(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Сохранить параметры курса и обновить его."""
+    from app.services import fx
+
+    form = await request.form()
+
+    raw_star = str(form.get("star_usd") or "").strip().replace(",", ".")
+    if raw_star:
+        try:
+            fx.set_manual_star_usd(Decimal(raw_star))
+        except (InvalidOperation, ValueError):
+            pass
+    elif form.get("clear_star"):
+        fx.set_manual_star_usd(None)
+
+    raw_spread = str(form.get("spread") or "").strip().replace(",", ".")
+    if raw_spread:
+        try:
+            value = Decimal(raw_spread) / 100
+            if 0 <= value < 1:
+                fx.set_spread(value)
+        except (InvalidOperation, ValueError):
+            pass
+
+    if form.get("refresh"):
+        await fx.refresh()
+    return RedirectResponse("/trading?saved=1", status_code=303)
 
 
 @app.get("/audit", response_class=HTMLResponse)
