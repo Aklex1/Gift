@@ -117,3 +117,36 @@ def test_every_field_has_hint():
     for field in secrets.FIELDS:
         assert field.hint, f"{field.key}: нет подсказки"
         assert field.group, f"{field.key}: нет группы"
+
+
+def test_unreadable_secret_does_not_crash(session, monkeypatch):
+    """Смена ключа шифрования не должна ронять приложение.
+
+    Один нечитаемый секрет обязан деградировать до «не задано»,
+    иначе бот перестаёт запускаться целиком.
+    """
+    from app.models import Setting
+
+    session.add(
+        Setting(key="PORTALS_AUTH", value="enc::поврежденные-данные", is_secret=True)
+    )
+    session.flush()
+    secrets.invalidate()
+
+    # Не бросает исключение и откатывается на .env.
+    assert secrets.get("PORTALS_AUTH") is None
+    assert secrets.resolve("PORTALS_AUTH", "из-env") == "из-env"
+
+
+def test_masked_state_survives_unreadable_secret(session):
+    """Страница настроек открывается даже с повреждённым секретом."""
+    from app.models import Setting
+
+    session.add(
+        Setting(key="MRKT_AUTH", value="enc::мусор", is_secret=True)
+    )
+    session.flush()
+    secrets.invalidate()
+
+    state = secrets.masked_state()
+    assert state["MRKT_AUTH"]["is_set"] is False

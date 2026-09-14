@@ -172,7 +172,20 @@ def get(key: str) -> str | None:
         log.debug("Не удалось прочитать настройку %s: %s", key, exc)
         return None
 
-    value = decrypt(raw) if raw else None
+    try:
+        value = decrypt(raw) if raw else None
+    except RuntimeError as exc:
+        # Ключ шифрования сменился или потерян. Валить процесс нельзя:
+        # иначе один нечитаемый секрет останавливает весь бот.
+        log.error(
+            "Секрет %s не расшифрован (%s). Значение игнорируется, "
+            "используется .env. Задайте прежний GIFT_SECRET_KEY либо "
+            "введите ключ заново в панели.",
+            key,
+            exc,
+        )
+        value = None
+
     value = value or None
     _cache[key] = (value, now)
     return value
@@ -242,7 +255,7 @@ def masked_state() -> dict[str, dict]:
 
     out: dict[str, dict] = {}
     for field in FIELDS:
-        from_db = get(field.key)
+        from_db = get(field.key)  # нечитаемый секрет вернётся как None
         from_env = env_fallback.get(field.key) or ""
         value = from_db or from_env
         out[field.key] = {
