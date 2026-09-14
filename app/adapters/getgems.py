@@ -19,6 +19,7 @@ from app.adapters.base import (
 )
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
+from app.services import secrets
 from app.enums import Currency, Market
 
 log = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ class GetgemsAdapter(HttpMarketAdapter):
 
     def __init__(self, base_url: str | None = None, auth: str | None = None) -> None:
         super().__init__(
-            base_url or settings.getgems_base_url, auth or settings.getgems_api_key
+            base_url or settings.getgems_base_url,
+            auth or secrets.resolve("GETGEMS_API_KEY", settings.getgems_api_key),
         )
         has_key = bool(self.auth)
         # Публичный API документирован — статус выше, чем у приватных площадок,

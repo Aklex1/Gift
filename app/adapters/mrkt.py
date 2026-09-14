@@ -33,6 +33,7 @@ from app.adapters.base import (
 )
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
+from app.services import secrets
 from app.enums import Currency, Market
 
 log = logging.getLogger(__name__)
@@ -49,8 +50,11 @@ class MrktAdapter(HttpMarketAdapter):
     auth_header = "Authorization"
 
     def __init__(self, base_url: str | None = None, auth: str | None = None) -> None:
-        super().__init__(base_url or settings.mrkt_base_url, auth or settings.mrkt_auth)
-        self._init_data = settings.mrkt_init_data
+        super().__init__(
+            base_url or settings.mrkt_base_url,
+            auth or secrets.resolve("MRKT_AUTH", settings.mrkt_auth),
+        )
+        self._init_data = secrets.resolve("MRKT_INIT_DATA", settings.mrkt_init_data)
         has_auth = bool(self.auth or self._init_data)
 
         self.capabilities = {

@@ -17,6 +17,7 @@ from decimal import Decimal
 import httpx
 
 from app.config import settings
+from app.services import secrets
 from app.enums import Currency
 
 log = logging.getLogger(__name__)
@@ -29,13 +30,18 @@ class TonClient:
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:
         self.base_url = (base_url or settings.tonapi_base_url).rstrip("/")
-        self.api_key = api_key or settings.tonapi_key
+        self.api_key = api_key or secrets.resolve("TONAPI_KEY", settings.tonapi_key)
         self._client: httpx.AsyncClient | None = None
+
+    @property
+    def wallet_address(self) -> str:
+        """Наблюдаемый адрес кошелька."""
+        return secrets.resolve("TON_WALLET_ADDRESS", settings.ton_wallet_address)
 
     @property
     def is_configured(self) -> bool:
         """Задан ли адрес кошелька для наблюдения."""
-        return bool(settings.ton_wallet_address)
+        return bool(self.wallet_address)
 
     async def _http(self) -> httpx.AsyncClient:
         """Ленивый HTTP-клиент."""
@@ -50,7 +56,7 @@ class TonClient:
 
     async def balance(self, address: str | None = None) -> Decimal:
         """Баланс кошелька в TON."""
-        addr = address or settings.ton_wallet_address
+        addr = address or self.wallet_address
         if not addr:
             return Decimal(0)
         client = await self._http()
@@ -61,7 +67,7 @@ class TonClient:
 
     async def transactions(self, address: str | None = None, limit: int = 50) -> list[dict]:
         """Последние транзакции кошелька — для сверки пополнений."""
-        addr = address or settings.ton_wallet_address
+        addr = address or self.wallet_address
         if not addr:
             return []
         client = await self._http()

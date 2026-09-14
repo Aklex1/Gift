@@ -24,6 +24,7 @@ from app.enums import Confidence, Market, PositionStatus, TradeMode
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Position, Strategy, utcnow
 from app.services import budget as budget_service
+from app.services import secrets
 from app.services import executor, portfolio
 from app.services import gifts as gifts_service
 from app.services import strategy as strategy_service
@@ -39,9 +40,20 @@ _pending_input: dict[int, tuple[str, int]] = {}
 # ----------------------------------------------------------------------
 # Доступ
 # ----------------------------------------------------------------------
+def owner_ids() -> list[int]:
+    """Список владельцев: из панели, иначе из .env."""
+    raw = secrets.resolve("OWNER_IDS", settings.owner_ids)
+    out: list[int] = []
+    for chunk in str(raw).replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if chunk.lstrip("-").isdigit():
+            out.append(int(chunk))
+    return out
+
+
 def is_owner(user_id: int | None) -> bool:
     """Fail-closed проверка владельца."""
-    owners = settings.owner_id_list
+    owners = owner_ids()
     if not owners:
         return False
     return user_id in owners
@@ -669,11 +681,13 @@ async def cb_unlist(call: CallbackQuery) -> None:
 async def main() -> None:
     """Запустить бота."""
     setup_logging("bot")
-    if not settings.bot_token:
+    token = secrets.resolve("BOT_TOKEN", settings.bot_token)
+    if not token:
         raise SystemExit(
-            "BOT_TOKEN не задан. Получите токен у @BotFather и впишите в .env"
+            "BOT_TOKEN не задан. Получите токен у @BotFather и укажите "
+            "в веб-панели (Настройки) либо в файле .env"
         )
-    if not settings.owner_id_list:
+    if not owner_ids():
         log.warning(
             "OWNER_IDS пуст — бот не будет отвечать никому. "
             "Узнайте свой id командой /id и впишите его в .env"
@@ -683,7 +697,7 @@ async def main() -> None:
     from aiogram.enums import ParseMode
 
     bot = Bot(
-        token=settings.bot_token,
+        token=token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     log.info("Бот запущен")

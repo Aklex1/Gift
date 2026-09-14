@@ -21,6 +21,7 @@ from app.adapters.base import (
 )
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
+from app.services import secrets
 from app.enums import Currency, Market
 
 log = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ class TonnelAdapter(HttpMarketAdapter):
 
     def __init__(self, base_url: str | None = None, auth: str | None = None) -> None:
         super().__init__(
-            base_url or settings.tonnel_base_url, auth or settings.tonnel_auth
+            base_url or settings.tonnel_base_url,
+            auth or secrets.resolve("TONNEL_AUTH", settings.tonnel_auth),
         )
         has_auth = bool(self.auth)
         self.capabilities = {

@@ -54,25 +54,30 @@ async def _login() -> int:
     from telethon import TelegramClient
     from telethon.errors import SessionPasswordNeededError
 
-    if not settings.tg_api_id or not settings.tg_api_hash:
+    from app.adapters.telegram_gateway import gateway
+
+    api_id, api_hash = gateway.credentials()
+    if not api_id or not api_hash:
         print(
-            "✗ TG_API_ID / TG_API_HASH не заданы.\n"
+            "✗ api_id / api_hash не заданы.\n"
             "  Получите их на https://my.telegram.org -> API development tools\n"
-            "  и впишите в файл .env",
+            "  и укажите в веб-панели (Настройки) либо в файле .env",
             file=sys.stderr,
         )
         return 1
 
     settings.ensure_dirs()
     client = TelegramClient(
-        str(settings.session_path.with_suffix("")),
-        settings.tg_api_id,
-        settings.tg_api_hash,
+        str(settings.session_path.with_suffix("")), api_id, api_hash
     )
     await client.connect()
 
     if not await client.is_user_authorized():
-        phone = settings.tg_phone or input("Номер телефона (в формате +7…): ").strip()
+        from app.services import secrets
+
+        phone = secrets.resolve("TG_PHONE", settings.tg_phone) or input(
+            "Номер телефона (в формате +7…): "
+        ).strip()
         await client.send_code_request(phone)
         code = input("Код из Telegram: ").strip()
         try:
@@ -295,10 +300,13 @@ def cmd_doctor() -> int:
             "OWNER_IDS пуст — бот не ответит никому "
             "(узнайте свой id командой /id в боте)"
         )
-    if not settings.tg_api_id or not settings.tg_api_hash:
+    from app.adapters.telegram_gateway import gateway
+
+    api_id, api_hash = gateway.credentials()
+    if not api_id or not api_hash:
         problems.append(
-            "TG_API_ID / TG_API_HASH не заданы — поиск подарков работать не будет "
-            "(https://my.telegram.org)"
+            "api_id / api_hash не заданы — поиск подарков работать не будет "
+            "(веб-панель → Настройки, либо https://my.telegram.org)"
         )
     elif not settings.session_path.exists():
         problems.append(

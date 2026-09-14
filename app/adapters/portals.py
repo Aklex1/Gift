@@ -25,6 +25,7 @@ from app.adapters.base import (
 )
 from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
 from app.config import settings
+from app.services import secrets
 from app.enums import Currency, Market
 
 log = logging.getLogger(__name__)
@@ -39,7 +40,8 @@ class PortalsAdapter(HttpMarketAdapter):
 
     def __init__(self, base_url: str | None = None, auth: str | None = None) -> None:
         super().__init__(
-            base_url or settings.portals_base_url, auth or settings.portals_auth
+            base_url or settings.portals_base_url,
+            auth or secrets.resolve("PORTALS_AUTH", settings.portals_auth),
         )
         has_auth = bool(self.auth)
         # Без токена доступен только анонимный каталог (и то не всегда).

@@ -80,3 +80,33 @@ footer { color: var(--muted); text-align: center; padding: 24px; font-size: 13px
   table { display: block; overflow-x: auto; }
   main { padding: 16px 12px 48px; }
 }
+
+/* --- страница настроек --- */
+table.settings td { vertical-align: top; }
+table.settings .skey { width: 42%; }
+table.settings label { font-weight: 600; }
+table.settings .hint { font-size: 12.5px; margin: 4px 0 6px; }
+table.settings .envkey {
+  font-size: 11.5px; background: #22262f; color: var(--muted);
+  padding: 1px 6px; border-radius: 4px;
+}
+table.settings .current { font-size: 13px; margin-bottom: 6px; }
+table.settings input[type="text"],
+table.settings input[type="password"] {
+  width: 100%; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: #11141a; color: var(--text);
+  font-size: 14px; font-family: inherit;
+}
+table.settings input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+table.settings .clear {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--muted); font-weight: 400; margin-top: 6px;
+}
+.actions { display: flex; gap: 10px; margin: 24px 0; flex-wrap: wrap; }
+button.secondary { background: #2a2f3a; color: var(--text); }
+@media (max-width: 640px) {
+  table.settings, table.settings tbody, table.settings tr, table.settings td {
+    display: block; width: 100%;
+  }
+  table.settings .skey { padding-bottom: 4px; }
+}

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Настройки — Gift{% endblock %}
+{% block content %}
+<h1>Настройки</h1>
+
+{% if saved %}
+<div class="banner ok">
+  <div>Сохранено полей: <b>{{ saved }}</b>. Ключи площадок применяются сразу.
+    Токен бота требует перезапуска: <code>systemctl restart gift-bot</code></div>
+</div>
+{% endif %}
+
+<div class="banner {{ 'ok' if session_ok else 'danger' }}">
+  <div>
+    Сессия торгового аккаунта:
+    <b>{{ 'авторизована' if session_ok else 'НЕ авторизована' }}</b>
+    {% if not session_ok %}
+      <br><span class="muted">После заполнения api_id и api_hash выполните
+      на сервере: <code>gift-cli login</code></span>
+    {% endif %}
+  </div>
+</div>
+
+<form method="post" action="/settings">
+  {% for group, items in groups.items() %}
+  <h2>{{ group }}</h2>
+  <table class="settings">
+    {% for item in items %}
+    <tr>
+      <td class="skey">
+        <label for="f-{{ item.field.key }}">{{ item.field.title }}</label>
+        <div class="muted hint">{{ item.field.hint }}</div>
+        <code class="envkey">{{ item.field.key }}</code>
+      </td>
+      <td class="sval">
+        {% if item.is_set %}
+          <div class="current">
+            Сейчас: <b>{{ item.display }}</b>
+            <span class="muted">· источник: {{ item.source }}</span>
+          </div>
+        {% else %}
+          <div class="current muted">не задано</div>
+        {% endif %}
+        <input type="{{ 'password' if item.field.secret else 'text' }}"
+               id="f-{{ item.field.key }}"
+               name="{{ item.field.key }}"
+               autocomplete="off"
+               placeholder="{{ item.field.placeholder or ('оставьте пустым — не менять' if item.is_set else '') }}"
+               {% if not item.field.secret and item.is_set %}value="{{ item.display }}"{% endif %}>
+        {% if item.is_set %}
+        <label class="clear">
+          <input type="checkbox" name="clear__{{ item.field.key }}" value="1">
+          очистить
+        </label>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endfor %}
+
+  <div class="actions">
+    <button type="submit">Сохранить</button>
+    <button type="button" class="secondary" onclick="testMarkets()">
+      Проверить площадки
+    </button>
+  </div>
+</form>
+
+<pre id="test-result" hidden></pre>
+
+<h2>Что панель менять не может</h2>
+<p class="muted">
+  Режим торговли, лимиты, боевой режим площадок и строка подключения к базе
+  задаются в файле <code>/opt/gift/.env</code> — это защита от случайного
+  включения торговли через браузер. После правки:
+  <code>systemctl restart gift-bot gift-worker gift-web</code>
+</p>
+
+<script>
+async function testMarkets() {
+  const out = document.getElementById('test-result');
+  out.hidden = false;
+  out.textContent = 'Проверяю площадки…';
+  try {
+    const r = await fetch('/settings/test', {method: 'POST'});
+    out.textContent = JSON.stringify(await r.json(), null, 2);
+  } catch (e) {
+    out.textContent = 'Ошибка проверки: ' + e;
+  }
+}
+</script>
+{% endblock %}

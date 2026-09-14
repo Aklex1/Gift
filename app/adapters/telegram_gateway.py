@@ -14,6 +14,7 @@ from typing import Any
 
 from app.adapters.base import AuthRequired, OutcomeUnknown, RateLimited
 from app.config import settings
+from app.services import secrets
 
 log = logging.getLogger(__name__)
 
@@ -52,9 +53,21 @@ class TelegramGateway:
         return cls._instance
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def credentials() -> tuple[int, str]:
+        """api_id и api_hash: сначала из панели, затем из .env."""
+        raw_id = secrets.resolve("TG_API_ID", str(settings.tg_api_id or ""))
+        api_hash = secrets.resolve("TG_API_HASH", settings.tg_api_hash)
+        try:
+            api_id = int(raw_id) if raw_id else 0
+        except ValueError:
+            api_id = 0
+        return (api_id, api_hash)
+
     def is_configured(self) -> bool:
         """Заданы ли api_id/api_hash."""
-        return bool(settings.tg_api_id and settings.tg_api_hash)
+        api_id, api_hash = self.credentials()
+        return bool(api_id and api_hash)
 
     def session_exists(self) -> bool:
         """Есть ли файл авторизованной сессии."""
@@ -62,10 +75,12 @@ class TelegramGateway:
 
     async def client(self) -> Any:
         """Получить подключённый и авторизованный TelegramClient."""
-        if not self.is_configured():
+        api_id, api_hash = self.credentials()
+        if not (api_id and api_hash):
             raise AuthRequired(
-                "TG_API_ID / TG_API_HASH не заданы. Получите их на "
-                "https://my.telegram.org -> API development tools и впишите в .env"
+                "api_id / api_hash не заданы. Получите их на "
+                "https://my.telegram.org -> API development tools и укажите "
+                "в веб-панели (Настройки) либо в файле .env"
             )
         if self._client is not None and self._client.is_connected():
             return self._client
@@ -75,8 +90,8 @@ class TelegramGateway:
         settings.ensure_dirs()
         self._client = TelegramClient(
             str(settings.session_path.with_suffix("")),
-            settings.tg_api_id,
-            settings.tg_api_hash,
+            api_id,
+            api_hash,
             # Пейсинг делаем сами; авто-ретраи Telethon на FloodWait отключены,
             # чтобы write-операции не отправлялись повторно вслепую.
             flood_sleep_threshold=0,

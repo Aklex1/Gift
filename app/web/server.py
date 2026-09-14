@@ -227,6 +227,73 @@ async def markets_probe(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(report)
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(
+    request: Request, saved: int = 0, _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Форма ввода ключей и токенов."""
+    from app.services import secrets
+
+    state = secrets.masked_state()
+    groups: dict[str, list] = {}
+    for field in secrets.FIELDS:
+        groups.setdefault(field.group, []).append(
+            {"field": field, **state[field.key]}
+        )
+
+    session_ok = settings.session_path.exists()
+    return templates.TemplateResponse(
+        request=request,
+        name="settings.html",
+        context={
+            "groups": groups,
+            "saved": saved,
+            "session_ok": session_ok,
+            "session_path": str(settings.session_path),
+        },
+    )
+
+
+@app.post("/settings")
+async def settings_save(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Сохранить изменённые поля.
+
+    Пустое поле означает «не менять»: иначе маскированное значение
+    затирало бы сохранённый секрет. Для очистки есть отдельный флажок.
+    """
+    from app.services import secrets
+    from app.adapters.registry import _ADAPTERS
+
+    form = await request.form()
+    changed = 0
+    for field in secrets.FIELDS:
+        if form.get(f"clear__{field.key}"):
+            secrets.set_value(field.key, "", actor="web")
+            changed += 1
+            continue
+        value = str(form.get(field.key, "") or "").strip()
+        if not value:
+            continue
+        secrets.set_value(field.key, value, actor="web")
+        changed += 1
+
+    if changed:
+        # Адаптеры создаются с токенами в конструкторе — пересоздаём.
+        _ADAPTERS.clear()
+    return RedirectResponse(f"/settings?saved={changed}", status_code=303)
+
+
+@app.post("/settings/test")
+async def settings_test(_: str = Depends(require_auth)) -> JSONResponse:
+    """Проверить доступность площадок с текущими ключами."""
+    from app.adapters.registry import _ADAPTERS
+
+    _ADAPTERS.clear()
+    return JSONResponse(await probe_all())
+
+
 @app.get("/audit", response_class=HTMLResponse)
 async def audit_page(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
     """Журнал аудита."""
