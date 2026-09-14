@@ -110,14 +110,14 @@ class Gift(Base, TimestampMixin):
     #: Стабильный ключ идентичности: collection#number либо slug.
     canonical_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
 
-    collection: Mapped[str] = mapped_column(String(128), index=True)
+    collection: Mapped[str] = mapped_column(String(255), index=True)
     number: Mapped[int | None] = mapped_column(Integer, index=True)
     slug: Mapped[str | None] = mapped_column(String(255), index=True)
 
     # Атрибуты, определяющие редкость и цену.
-    model: Mapped[str | None] = mapped_column(String(128), index=True)
-    backdrop: Mapped[str | None] = mapped_column(String(128), index=True)
-    symbol: Mapped[str | None] = mapped_column(String(128), index=True)
+    model: Mapped[str | None] = mapped_column(String(255), index=True)
+    backdrop: Mapped[str | None] = mapped_column(String(255), index=True)
+    symbol: Mapped[str | None] = mapped_column(String(255), index=True)
     model_rarity: Mapped[float | None] = mapped_column(Numeric(10, 4))
     backdrop_rarity: Mapped[float | None] = mapped_column(Numeric(10, 4))
     symbol_rarity: Mapped[float | None] = mapped_column(Numeric(10, 4))
@@ -153,7 +153,7 @@ class Listing(Base, TimestampMixin):
     market: Mapped[Market] = mapped_column(EnumStr(Market), index=True)
 
     #: Идентификатор лота на стороне площадки.
-    external_id: Mapped[str] = mapped_column(String(128), index=True)
+    external_id: Mapped[str] = mapped_column(String(255), index=True)
 
     price: Mapped[Decimal] = mapped_column(Money)
     currency: Mapped[Currency] = mapped_column(EnumStr(Currency))
@@ -183,7 +183,7 @@ class MarketFact(Base):
     gift_id: Mapped[int | None] = mapped_column(ForeignKey("gifts.id"), index=True)
     market: Mapped[Market] = mapped_column(EnumStr(Market), index=True)
 
-    collection: Mapped[str] = mapped_column(String(128), index=True)
+    collection: Mapped[str] = mapped_column(String(255), index=True)
     model: Mapped[str | None] = mapped_column(String(128), index=True)
     backdrop: Mapped[str | None] = mapped_column(String(128))
     symbol: Mapped[str | None] = mapped_column(String(128))
@@ -195,7 +195,7 @@ class MarketFact(Base):
     happened_at: Mapped[dt.datetime] = mapped_column(DateTime, index=True)
     #: Флаг подозрения на wash trade (продавец = покупатель и т. п.).
     suspected_wash: Mapped[bool] = mapped_column(Boolean, default=False)
-    external_id: Mapped[str | None] = mapped_column(String(128))
+    external_id: Mapped[str | None] = mapped_column(String(255))
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 
     __table_args__ = (
@@ -430,7 +430,7 @@ class Intent(Base, TimestampMixin):
     strategy_id: Mapped[int | None] = mapped_column(ForeignKey("strategies.id"), index=True)
     gift_id: Mapped[int | None] = mapped_column(ForeignKey("gifts.id"), index=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), index=True)
-    listing_external_id: Mapped[str | None] = mapped_column(String(128))
+    listing_external_id: Mapped[str | None] = mapped_column(String(255))
 
     #: Цена, на которую рассчитывали при планировании.
     planned_price: Mapped[Decimal | None] = mapped_column(Money)
@@ -502,7 +502,7 @@ class Position(Base, TimestampMixin):
     # --- выставление ---
     list_market: Mapped[Market | None] = mapped_column(EnumStr(Market))
     list_price: Mapped[Decimal | None] = mapped_column(Money)
-    list_external_id: Mapped[str | None] = mapped_column(String(128))
+    list_external_id: Mapped[str | None] = mapped_column(String(255))
     listed_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
     last_reprice_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
     reprice_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -544,7 +544,7 @@ class Candidate(Base, TimestampMixin):
     strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), index=True)
     gift_id: Mapped[int] = mapped_column(ForeignKey("gifts.id"), index=True)
     market: Mapped[Market] = mapped_column(EnumStr(Market), index=True)
-    listing_external_id: Mapped[str] = mapped_column(String(128))
+    listing_external_id: Mapped[str] = mapped_column(String(255))
 
     #: Цена, приведённая к Stars — для сравнения площадок между собой.
     price_stars: Mapped[Decimal] = mapped_column(Money)

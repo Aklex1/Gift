@@ -299,6 +299,22 @@ def snapshot_from_telegram(
     )
 
 
+def fit(value: str | None, limit: int = 255) -> str | None:
+    """Обрезать строку под длину колонки.
+
+    Площадки не обязаны соблюдать наши ограничения: слишком длинное
+    название однажды уронило весь проход сканера. Лучше сохранить
+    укороченное значение, чем потерять данные целиком.
+    """
+    if value is None:
+        return None
+    value = str(value)
+    if len(value) <= limit:
+        return value
+    log.warning("Значение обрезано до %s символов: %.60s…", limit, value)
+    return value[:limit]
+
+
 def record_facts(session: Session, sales: list, market: Market) -> int:
     """Сохранить историю продаж, отфильтровав дубликаты и wash trades."""
     saved = 0
@@ -307,7 +323,7 @@ def record_facts(session: Session, sales: list, market: Market) -> int:
             continue
         exists = (
             session.query(MarketFact)
-            .filter_by(market=market, external_id=sale.external_id)
+            .filter_by(market=market, external_id=fit(sale.external_id))
             .first()
         )
         if exists:
@@ -318,16 +334,16 @@ def record_facts(session: Session, sales: list, market: Market) -> int:
         session.add(
             MarketFact(
                 market=market,
-                collection=sale.gift.collection,
-                model=sale.gift.model,
-                backdrop=sale.gift.backdrop,
-                symbol=sale.gift.symbol,
+                collection=fit(sale.gift.collection),
+                model=fit(sale.gift.model),
+                backdrop=fit(sale.gift.backdrop),
+                symbol=fit(sale.gift.symbol),
                 price=sale.price,
                 currency=sale.currency,
                 price_stars=price_stars,
                 happened_at=sale.happened_at,
                 suspected_wash=wash,
-                external_id=sale.external_id,
+                external_id=fit(sale.external_id),
                 raw=sale.raw,
             )
         )

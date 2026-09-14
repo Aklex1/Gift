@@ -452,6 +452,24 @@ async def _inventory() -> int:
     return 0
 
 
+#: Значения, которые перестали работать и подлежат замене.
+#: Правится только то, что заведомо сломано — например, домен
+#: площадки, который больше не существует. Ключи и секреты не
+#: трогаются никогда.
+OBSOLETE_VALUES: dict[str, tuple[str, str, str]] = {
+    "PORTALS_BASE_URL": (
+        "https://portals-market.com/api",
+        "https://portals.tg/api",
+        "домен portals-market.com больше не резолвится",
+    ),
+    "MRKT_BASE_URL": (
+        "https://api.mrkt.land",
+        "https://api.tgmrkt.io/api/v1",
+        "прежний адрес MRKT был указан неверно",
+    ),
+}
+
+
 def cmd_env_sync() -> int:
     """Добавить в .env настройки, появившиеся в новых версиях.
 
@@ -487,6 +505,18 @@ def cmd_env_sync() -> int:
     current_text = env_path.read_text(encoding="utf-8")
     have = keys_of(current_text)
 
+    # Замена заведомо нерабочих значений: изменившийся домен площадки
+    # иначе навсегда остался бы в файле, ведь существующие значения
+    # мы принципиально не трогаем.
+    replaced: list[str] = []
+    for key, (old, new, why) in OBSOLETE_VALUES.items():
+        needle = f"{key}={old}"
+        if needle in current_text:
+            current_text = current_text.replace(needle, f"{key}={new}")
+            replaced.append(f"{key}: {old} -> {new} ({why})")
+    if replaced:
+        env_path.write_text(current_text, encoding="utf-8")
+
     # Собираем недостающие настройки вместе с комментариями над ними.
     missing: list[str] = []
     pending_comments: list[str] = []
@@ -513,8 +543,14 @@ def cmd_env_sync() -> int:
         added_keys.append(key)
         pending_comments = []
 
+    for line in replaced:
+        print(f"✓ Заменено {line}")
+
     if not added_keys:
-        print("✓ Все настройки из шаблона уже есть в .env")
+        if not replaced:
+            print("✓ Все настройки из шаблона уже есть в .env")
+        else:
+            print("\nПерезапустите сервисы: systemctl restart gift-bot gift-worker gift-web")
         return 0
 
     stamp = _dt.datetime.now().strftime("%Y-%m-%d")
@@ -601,6 +637,17 @@ def cmd_doctor() -> int:
             "В AUTO_WHITELIST есть площадки, кроме telegram. "
             "Приватные API без SLA не допускаются в автономный режим."
         )
+
+    for key, (old, _new, why) in OBSOLETE_VALUES.items():
+        actual = {
+            "PORTALS_BASE_URL": settings.portals_base_url,
+            "MRKT_BASE_URL": settings.mrkt_base_url,
+        }.get(key, "")
+        if actual.rstrip("/") == old.rstrip("/"):
+            problems.append(
+                f"{key} указывает на нерабочий адрес: {why}. "
+                f"Исправьте командой: gift-cli env-sync"
+            )
 
     print()
     for item in warnings:

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.adapters.base import GiftRef, ListingDTO
 from app.enums import Market
 from app.models import Gift, Listing, utcnow
-from app.services.marketdata import to_stars
+from app.services.marketdata import fit, to_stars
 
 log = logging.getLogger(__name__)
 
@@ -21,17 +21,17 @@ def upsert_gift(session: Session, ref: GiftRef) -> Gift:
     Схлопывание одной и той же вещи с разных площадок в одну запись —
     обязательное условие кросс-рыночного сравнения цен.
     """
-    key = ref.canonical_key
+    key = fit(ref.canonical_key)
     gift = session.query(Gift).filter_by(canonical_key=key).one_or_none()
     if gift is None:
         gift = Gift(
-            canonical_key=key,
-            collection=ref.collection,
+            canonical_key=fit(key),
+            collection=fit(ref.collection),
             number=ref.number,
-            slug=ref.slug,
-            model=ref.model,
-            backdrop=ref.backdrop,
-            symbol=ref.symbol,
+            slug=fit(ref.slug),
+            model=fit(ref.model),
+            backdrop=fit(ref.backdrop),
+            symbol=fit(ref.symbol),
             tg_gift_id=ref.tg_gift_id,
             nft_address=ref.nft_address,
             attributes=ref.attributes or {},
@@ -58,7 +58,7 @@ def upsert_listing(session: Session, dto: ListingDTO) -> Listing:
     gift = upsert_gift(session, dto.gift)
     listing = (
         session.query(Listing)
-        .filter_by(market=dto.market, external_id=dto.external_id)
+        .filter_by(market=dto.market, external_id=fit(dto.external_id))
         .one_or_none()
     )
     price_stars = to_stars(session, dto.price, dto.currency)
@@ -67,11 +67,11 @@ def upsert_listing(session: Session, dto: ListingDTO) -> Listing:
         listing = Listing(
             gift_id=gift.id,
             market=dto.market,
-            external_id=dto.external_id,
+            external_id=fit(dto.external_id),
             price=dto.price,
             currency=dto.currency,
             price_stars=price_stars,
-            seller=dto.seller,
+            seller=fit(dto.seller, 128),
             is_active=True,
             seen_at=utcnow(),
             raw=dto.raw or {},
@@ -82,7 +82,7 @@ def upsert_listing(session: Session, dto: ListingDTO) -> Listing:
         listing.price = dto.price
         listing.currency = dto.currency
         listing.price_stars = price_stars
-        listing.seller = dto.seller
+        listing.seller = fit(dto.seller, 128)
         listing.is_active = True
         listing.seen_at = utcnow()
         listing.raw = dto.raw or {}

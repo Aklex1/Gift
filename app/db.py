@@ -79,10 +79,11 @@ def sync_columns() -> list[str]:
     обновлении версии на работающем сервере новые поля иначе остались
     бы отсутствующими, и запросы падали бы.
 
-    Делается только добавление колонок — существующие данные не
-    трогаются, ничего не удаляется.
+    Делаются только безопасные изменения: добавление колонок и
+    расширение строковых полей. Данные не теряются, ничего не
+    удаляется и не сужается.
     """
-    from sqlalchemy import inspect, text
+    from sqlalchemy import String, inspect, text
 
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -92,7 +93,35 @@ def sync_columns() -> list[str]:
         for table in Base.metadata.sorted_tables:
             if table.name not in existing_tables:
                 continue
-            present = {col["name"] for col in inspector.get_columns(table.name)}
+            actual = {col["name"]: col for col in inspector.get_columns(table.name)}
+            present = set(actual)
+
+            # Расширение VARCHAR: внешние площадки присылают строки
+            # длиннее, чем закладывалось изначально.
+            if engine.dialect.name == "postgresql":
+                for column in table.columns:
+                    if column.name not in present:
+                        continue
+                    wanted = getattr(column.type, "length", None)
+                    if not isinstance(column.type, String) or not wanted:
+                        continue
+                    current = getattr(actual[column.name]["type"], "length", None)
+                    if current is None or current >= wanted:
+                        continue
+                    conn.execute(
+                        text(
+                            f'ALTER TABLE "{table.name}" '
+                            f'ALTER COLUMN "{column.name}" TYPE VARCHAR({wanted})'
+                        )
+                    )
+                    added.append(f"{table.name}.{column.name} -> varchar({wanted})")
+                    log.info(
+                        "Колонка %s.%s расширена до %s символов",
+                        table.name,
+                        column.name,
+                        wanted,
+                    )
+
             for column in table.columns:
                 if column.name in present:
                     continue

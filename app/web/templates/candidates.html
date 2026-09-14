@@ -42,10 +42,11 @@
     включённые стратегии:
     {% for name in report.strategies %}<span class="chip">{{ name }}</span>{% endfor %}
   </div>
-  {% else %}
+  {% elif not report.error %}
   <div class="scan-note warn-text">
     Ни одна стратегия не включена — сканер не запускается.
-    Откройте бота: <b>⚙️ Стратегии</b> → задайте бюджет → включите.
+    Включите на странице <a href="/strategies">Стратегии</a>:
+    задайте бюджет, затем поставьте галочку.
   </div>
   {% endif %}
 

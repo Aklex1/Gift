@@ -77,7 +77,9 @@ def save_failure(exc: BaseException) -> None:
             "candidates": 0,
             "markets": {},
             "rejections": {},
-            "strategies": [],
+            # Список стратегий намеренно не заполняется: при сорванном
+            # проходе мы о них ничего не знаем, а пустой список
+            # прочитался бы как «стратегий нет».
             "started_at": utcnow().isoformat(timespec="seconds"),
             "finished_at": utcnow().isoformat(timespec="seconds"),
             "error": f"{type(exc).__name__}: {exc}"[:500],
