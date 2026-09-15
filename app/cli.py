@@ -21,6 +21,7 @@
     verify-key  — проверить, что секреты читаются текущим ключом
     renew-tokens— продлить токены площадок через мини-приложения
     tokens      — показать состояние токенов площадок
+    transfer-target — кому бот передаст подарок при переносе
     lots        — какие лоты площадки отдают прямо сейчас
                   (`lots portals`, `lots --collection "Lol Pop"`)
     feed        — прочитать канал находок и показать коллекции
@@ -802,6 +803,83 @@ def cmd_doctor() -> int:
     return 1
 
 
+async def _transfer_target() -> int:
+    """Показать, кому именно бот передаст подарок.
+
+    Перенос необратим: подарок, ушедший не туда, не возвращается ничем.
+    Адрес депозита Portals нигде не публикует — его показывают только в
+    мини-приложении, — поэтому бот его не угадывает. Зато он может
+    разрешить введённое вами имя и показать, кто за ним стоит: этого
+    достаточно, чтобы поймать подделку до отправки.
+    """
+    from app.adapters import telegram_gateway
+    from app.db import init_db
+    from app.services import runtime, secrets
+
+    init_db()
+    target = (secrets.resolve("PORTALS_DEPOSIT", "") or "").strip()
+
+    print(f"Перенос подарков: {'ВКЛЮЧЁН' if runtime.transfer_enabled() else 'выключен'}")
+    if not target:
+        print(
+            "\n✗ Получатель не задан.\n\n"
+            "  Где взять: мини-приложение Portals → «Пополнить» →\n"
+            "  раздел про подарки (не про GRAM). Там указан аккаунт,\n"
+            "  которому нужно передать подарок.\n\n"
+            "  Вписать: панель → «Настройки» → «Куда переносить подарки\n"
+            "  для Portals».",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Задан получатель: {target}\n")
+    tg = telegram_gateway.default_gateway()
+    try:
+        client = await tg.client()
+        entity = await client.get_entity(target)
+    except Exception as exc:  # noqa: BLE001 - показываем причину, не падаем
+        print(f"✗ Не удалось найти {target}: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        print("  Проверьте написание. Несуществующий получатель — это "
+              "потерянный подарок.", file=sys.stderr)
+        return 1
+
+    name = " ".join(
+        x for x in (getattr(entity, "first_name", ""), getattr(entity, "last_name", ""))
+        if x
+    ) or getattr(entity, "title", "") or "—"
+
+    print("Telegram отвечает, что это:")
+    print(f"  имя       : {name}")
+    print(f"  username  : @{getattr(entity, 'username', None) or '—'}")
+    print(f"  id        : {getattr(entity, 'id', '—')}")
+    print(f"  бот       : {'да' if getattr(entity, 'bot', False) else 'нет'}")
+    print(f"  проверен  : {'да' if getattr(entity, 'verified', False) else 'нет'}")
+
+    danger = []
+    if getattr(entity, "scam", False):
+        danger.append("Telegram пометил аккаунт как МОШЕННИЧЕСКИЙ")
+    if getattr(entity, "fake", False):
+        danger.append("Telegram пометил аккаунт как ПОДДЕЛЬНЫЙ")
+    if getattr(entity, "restricted", False):
+        danger.append("аккаунт ограничен Telegram")
+
+    if danger:
+        print("\n🚨 ОПАСНО:")
+        for item in danger:
+            print(f"  • {item}")
+        print("  Ни в коем случае не включайте перенос на этот аккаунт.")
+        return 1
+
+    print(
+        "\nСверьте это с тем, что показывает мини-приложение Portals.\n"
+        "Совпадает — можно включать перенос на странице «Торговля».\n"
+        "Не совпадает — исправьте настройку: ошибка здесь стоит подарка."
+    )
+    await tg.close()
+    return 0
+
+
 async def _tokens() -> int:
     """Показать, что лежит в токенах площадок, ничего не меняя."""
     from app.services import webauth
@@ -1127,6 +1205,7 @@ def main(argv: list[str] | None = None) -> int:
             "verify-key",
             "renew-tokens",
             "tokens",
+            "transfer-target",
             "lots",
             "feed",
         ],
@@ -1203,6 +1282,7 @@ def main(argv: list[str] | None = None) -> int:
         "inventory": _inventory,
         "renew-tokens": _renew_tokens,
         "tokens": _tokens,
+        "transfer-target": _transfer_target,
         "feed": _feed,
     }
     return asyncio.run(async_commands[args.command]())

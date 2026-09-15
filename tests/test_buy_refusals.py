@@ -136,3 +136,134 @@ def test_refusal_mentions_the_code():
     assert "BALANCE_TOO_LOW" in executor._clean_refusal(
         RuntimeError("BALANCE_TOO_LOW")
     )
+
+
+# --- проверка получателя переноса -------------------------------------
+
+
+class _Entity:
+    """Ответ Telegram о том, кто стоит за именем."""
+
+    def __init__(self, **kwargs):
+        self.first_name = kwargs.get("first_name", "Portals")
+        self.last_name = ""
+        self.username = kwargs.get("username", "GiftsToPortals")
+        self.id = kwargs.get("id", 777)
+        self.bot = kwargs.get("bot", True)
+        self.verified = kwargs.get("verified", False)
+        self.scam = kwargs.get("scam", False)
+        self.fake = kwargs.get("fake", False)
+        self.restricted = kwargs.get("restricted", False)
+
+
+@pytest.fixture()
+def target_env(session, monkeypatch):
+    """Окружение для проверки получателя переноса."""
+    from contextlib import contextmanager
+
+    import app.db as db_module
+    from app.adapters import telegram_gateway
+    from app.services import secrets, store
+
+    @contextmanager
+    def scope():
+        yield session
+        session.flush()
+
+    monkeypatch.setattr(db_module, "init_db", lambda: None)
+    monkeypatch.setattr(db_module, "session_scope", scope)
+    monkeypatch.setattr(secrets, "session_scope", scope)
+    monkeypatch.setattr(store, "session_scope", scope)
+    secrets.invalidate()
+    store.invalidate()
+
+    def install(entity):
+        class _Client:
+            async def get_entity(self, _name):
+                if isinstance(entity, Exception):
+                    raise entity
+                return entity
+
+        class _Gateway:
+            async def client(self):
+                return _Client()
+
+            async def close(self):
+                pass
+
+        monkeypatch.setattr(telegram_gateway, "default_gateway", lambda: _Gateway())
+
+    yield install
+    secrets.invalidate()
+    store.invalidate()
+
+
+@pytest.mark.asyncio
+async def test_missing_target_explains_where_to_look(target_env, capsys):
+    """Без получателя сказано, где его взять и куда вписать."""
+    from app import cli
+
+    target_env(_Entity())
+    assert await cli._transfer_target() == 1
+    err = capsys.readouterr().err
+
+    assert "Portals" in err and "Пополнить" in err
+
+
+@pytest.mark.asyncio
+async def test_resolved_target_is_described(target_env, capsys):
+    """Показано, кто именно стоит за настройкой."""
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_DEPOSIT", "@GiftsToPortals")
+    target_env(_Entity())
+
+    assert await cli._transfer_target() == 0
+    out = capsys.readouterr().out
+
+    assert "@GiftsToPortals" in out
+    assert "777" in out
+    assert "Сверьте" in out
+
+
+@pytest.mark.asyncio
+async def test_scam_account_refused(target_env, capsys):
+    """Помеченный мошенническим аккаунт — отказ, а не предупреждение."""
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_DEPOSIT", "@Подделка")
+    target_env(_Entity(scam=True))
+
+    assert await cli._transfer_target() == 1
+    out = capsys.readouterr().out
+
+    assert "ОПАСНО" in out
+    assert "МОШЕННИЧЕСКИЙ" in out
+
+
+@pytest.mark.asyncio
+async def test_fake_account_refused(target_env, capsys):
+    """Поддельный — тоже."""
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_DEPOSIT", "@Подделка")
+    target_env(_Entity(fake=True))
+
+    assert await cli._transfer_target() == 1
+    assert "ПОДДЕЛЬНЫЙ" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_target_refused(target_env, capsys):
+    """Несуществующий получатель — это потерянный подарок."""
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_DEPOSIT", "@нет-такого")
+    target_env(ValueError("No user has that username"))
+
+    assert await cli._transfer_target() == 1
+    assert "потерянный подарок" in capsys.readouterr().err
