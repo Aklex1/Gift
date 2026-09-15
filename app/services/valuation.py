@@ -460,3 +460,78 @@ def suggested_list_price(
         target = minimum * (Decimal(1) + markup)
 
     return max(minimum, round_price(target, currency))
+
+
+def best_sale_market(
+    session: Session,
+    *,
+    buy_market: Market,
+    buy_price: Decimal,
+    collection: str,
+    model: str | None = None,
+    markets: "list[Market] | None" = None,
+) -> dict | None:
+    """Где выгоднее продать купленное и насколько.
+
+    Комиссии площадок различаются в разы: Telegram берёт 20% с
+    продажи, Portals — около 2.5%. Один и тот же лот, перепроданный на
+    другой площадке, приносит заметно больше — но только если он там
+    действительно продаётся по сопоставимой цене.
+
+    Поэтому цена продажи берётся из данных **самой этой площадки**.
+    Если по ней данных нет, вариант не рассматривается: подставить
+    сюда цену другого рынка значило бы нарисовать прибыль.
+
+    Считается подсказкой, а не заявкой: перенос подарка между
+    площадками бот выполнить не может, это ручная операция.
+
+    Returns:
+        Лучший вариант, если он выгоднее продажи там же, иначе None.
+    """
+    from app.services import arbitrage, marketdata
+
+    candidates = markets or [Market.TELEGRAM, Market.PORTALS, Market.MRKT]
+    transfer = marketdata.to_stars(
+        session, arbitrage.transfer_cost_ton(), Currency.TON
+    ) or Decimal(0)
+
+    best: dict | None = None
+    for market in candidates:
+        if market is buy_market:
+            continue
+
+        snapshot = marketdata.snapshot_for(
+            session, collection=collection, model=model, market=market
+        )
+        anchor = snapshot.floor_price or snapshot.median_price
+        if not anchor or anchor <= 0 or snapshot.active_listings == 0:
+            # Нет собственных данных площадки — считать нечего.
+            continue
+
+        fees = fees_in(session, get_fees(session, market), Currency.STARS)
+        buy_fees = fees_in(session, get_fees(session, buy_market), Currency.STARS)
+
+        cost = total_cost_of(buy_price, buy_fees) + transfer
+        proceeds = net_proceeds_from(anchor, fees)
+        profit = proceeds - cost
+        if cost <= 0 or profit <= 0:
+            continue
+
+        roi = profit / cost
+        if best is None or roi > best["net_roi"]:
+            best = {
+                "market": market.value,
+                "sale_price": anchor,
+                "net_profit": profit,
+                "net_roi": roi,
+                "sale_fee": fees.total_sale_rate,
+                "transfer_cost": transfer,
+                "listings": snapshot.active_listings,
+                "note": (
+                    f"продажа на {market.value} по {anchor:.0f} Stars "
+                    f"(комиссия {fees.total_sale_rate:.1%} против "
+                    f"{buy_fees.total_sale_rate:.0%} на {buy_market.value}); "
+                    f"перенос подарка выполняется вручную"
+                ),
+            }
+    return best

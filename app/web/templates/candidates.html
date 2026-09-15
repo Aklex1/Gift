@@ -160,6 +160,18 @@
       </form>
     </td>
   </tr>
+  {% if c.better_sale %}
+  <tr>
+    <td colspan="9" class="muted" style="padding-top:0;font-size:12px">
+      💡 Выгоднее продать на <b>{{ c.better_sale.market }}</b>:
+      по {{ c.better_sale.sale_price }} ★ это
+      <b class="pos">{{ c.better_sale.net_roi }}</b> вместо
+      {{ '%.1f'|format(c.roi) }}% — комиссия там ниже.
+      Лотов этого вида на площадке: {{ c.better_sale.listings }}.
+      <b>Перенос подарка выполняется вручную</b>, бот его не делает.
+    </td>
+  </tr>
+  {% endif %}
   {% if confirm == c.id %}
   <tr>
     <td colspan="9">

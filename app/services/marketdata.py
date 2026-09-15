@@ -218,8 +218,16 @@ def snapshot_for(
     collection: str,
     model: str | None = None,
     window: dt.timedelta = FRESH_WINDOW,
+    market: "Market | None" = None,
 ) -> MarketSnapshot:
-    """Построить срез рынка по накопленным фактам и активным лотам."""
+    """Построить срез рынка по накопленным фактам и активным лотам.
+
+    Args:
+        market: считать только по одной площадке. Нужно, чтобы оценить
+            продажу на конкретной площадке: цена одного и того же
+            подарка на Telegram и Portals различается, и брать общий
+            срез за цену продажи на Portals значило бы выдумывать её.
+    """
     since = utcnow() - window
 
     query = session.query(MarketFact).filter(
@@ -230,6 +238,8 @@ def snapshot_for(
     )
     if model:
         query = query.filter(MarketFact.model == model)
+    if market is not None:
+        query = query.filter(MarketFact.market == market)
     facts = query.all()
 
     prices = [Decimal(f.price_stars) for f in facts if f.price_stars]
@@ -246,6 +256,8 @@ def snapshot_for(
     listing_query = listing_query.join(Listing.gift).filter_by(collection=collection)
     if model:
         listing_query = listing_query.filter(Listing.gift.has(model=model))
+    if market is not None:
+        listing_query = listing_query.filter(Listing.market == market)
     active = listing_query.all()
 
     floor = min((Decimal(item.price_stars) for item in active if item.price_stars), default=None)
@@ -260,6 +272,7 @@ def snapshot_for(
         velocity_per_day=velocity,
         newest=newest,
         active_listings=len(active),
+        source=f"market:{market.value}" if market is not None else "own",
     )
 
 

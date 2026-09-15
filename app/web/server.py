@@ -198,6 +198,8 @@ async def candidates_page(
                     "expected_sale": (row.rationale or {}).get(
                         "expected_sale_price"
                     ),
+                    # Где выгоднее продать с учётом комиссий площадок.
+                    "better_sale": (row.rationale or {}).get("better_sale"),
                     "market_value": row.market,
                 }
             )

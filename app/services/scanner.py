@@ -462,6 +462,20 @@ async def scan_once() -> dict:
     return report
 
 
+def _sale_hint(best: dict | None) -> dict | None:
+    """Привести подсказку о продаже к виду, пригодному для JSON."""
+    if not best:
+        return None
+    return {
+        "market": best["market"],
+        "sale_price": str(best["sale_price"].quantize(Decimal("1"))),
+        "net_roi": f"{best['net_roi']:.1%}",
+        "net_profit": str(best["net_profit"].quantize(Decimal("1"))),
+        "listings": best["listings"],
+        "note": best["note"],
+    }
+
+
 async def evaluate_listing(
     dto: ListingDTO, plan: list[dict]
 ) -> tuple[int, Counter[str]]:
@@ -531,6 +545,21 @@ async def evaluate_listing(
                 rejections["risk"] += 1
                 continue
 
+            # Где выгоднее продать: комиссии площадок различаются в
+            # разы. Это подсказка — перенос подарка ручной, — поэтому
+            # на отбор кандидата не влияет и живёт в обосновании.
+            elsewhere = valuation.best_sale_market(
+                session,
+                buy_market=dto.market,
+                buy_price=price_stars,
+                collection=dto.gift.collection,
+                model=dto.gift.model,
+            )
+            if elsewhere and elsewhere["net_roi"] > result.net_roi:
+                result.reasons.append(elsewhere["note"])
+            else:
+                elsewhere = None
+
             gift = gifts_service.upsert_gift(session, dto.gift)
             exists = (
                 session.query(Candidate)
@@ -554,6 +583,7 @@ async def evaluate_listing(
                 exists.rationale = {
                     **result.as_dict(),
                     "market": snapshot.as_dict(),
+                    "better_sale": _sale_hint(elsewhere),
                 }
                 exists.expires_at = utcnow() + CANDIDATE_TTL
                 continue
@@ -571,7 +601,11 @@ async def evaluate_listing(
                     net_roi=result.net_roi,
                     risk_score=result.risk_score,
                     confidence=result.confidence,
-                    rationale={**result.as_dict(), "market": snapshot.as_dict()},
+                    rationale={
+                        **result.as_dict(),
+                        "market": snapshot.as_dict(),
+                        "better_sale": _sale_hint(elsewhere),
+                    },
                     state="pending",
                     expires_at=utcnow() + CANDIDATE_TTL,
                 )
