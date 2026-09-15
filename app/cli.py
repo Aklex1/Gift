@@ -1309,6 +1309,76 @@ async def _sales(collection: str | None, model: str | None) -> int:
     return 0
 
 
+async def _value(slug: str | None) -> int:
+    """Показать официальную оценку Telegram по подарку как есть.
+
+    Нужна, когда числа в панели выглядят неправдоподобно. Telegram
+    отдаёт цены «в наименьших единицах валюты», но какая это единица
+    для GRAM, в документации не сказано. Здесь видно и сырой ответ, и
+    что из него получилось после пересчёта, и рядом — цена той же
+    коллекции на Fragment, по которой видно, какой масштаб верен.
+    """
+    from decimal import Decimal
+
+    from app.adapters.fragment import FragmentAdapter
+    from app.adapters.registry import get_adapter
+    from app.adapters.telegram_mtproto import TelegramAdapter
+    from app.db import init_db, session_scope
+    from app.enums import Capability, Currency, Market
+    from app.services import marketdata
+
+    if not slug:
+        print("Укажите подарок: gift-cli value --slug chillflame-114734",
+              file=sys.stderr)
+        return 1
+
+    init_db()
+    adapter = get_adapter(Market.TELEGRAM)
+    if not isinstance(adapter, TelegramAdapter) or not adapter.supports(
+        Capability.SEARCH
+    ):
+        print("✗ Сессия Telegram не авторизована (gift-cli login)", file=sys.stderr)
+        return 1
+
+    try:
+        info = await adapter.value_info(slug)
+    except Exception as exc:  # noqa: BLE001 - показываем причину, не падаем
+        print(f"✗ Оценка недоступна: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    currency = info.get("currency")
+    print(f"=== {slug}: официальная оценка Telegram ===")
+    print(f"Валюта ответа: {getattr(currency, 'value', currency)}")
+    for field in ("value", "floor_price", "average_price", "last_sale_price",
+                  "initial_sale_price"):
+        print(f"  {field:<20} {info.get(field)}")
+    print(f"  listed_count         {info.get('listed_count')}")
+
+    with session_scope() as session:
+        rate = marketdata.latest_fx(session, Currency.TON, Currency.STARS)
+    print(f"\nКурс GRAM → Stars сейчас: {rate if rate else 'нет снапшота'}")
+
+    collection = slug.rsplit("-", 1)[0]
+    frag = FragmentAdapter()
+    try:
+        lots = await frag.search(collection=collection, limit=1)
+        if lots:
+            print(f"Дешёвый лот этой коллекции на Fragment: {lots[0].price} GRAM")
+            if rate:
+                print(f"  это примерно {Decimal(lots[0].price) * rate:.0f} ★ "
+                      f"по текущему курсу")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Fragment недоступен: {type(exc).__name__}")
+    finally:
+        await frag.close()
+
+    print(
+        "\nЕсли floor выше цены с Fragment в разы — сломан масштаб: либо "
+        "единица измерения в ответе, либо курс. Пришлите этот вывод."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -1337,6 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
             "lots",
             "feed",
             "sales",
+            "value",
         ],
     )
     parser.add_argument(
@@ -1365,6 +1436,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--model",
         help="модель подарка для команды sales",
+    )
+    parser.add_argument(
+        "--slug",
+        help="подарок для команды value, например chillflame-114734",
     )
     parser.add_argument(
         "--dry-run",
@@ -1400,6 +1475,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sales":
         return asyncio.run(_sales(args.collection, args.model))
+
+    if args.command == "value":
+        return asyncio.run(_value(args.slug))
 
     if args.command == "rotate-key":
         return cmd_rotate_key(args.new_key, args.dry_run)

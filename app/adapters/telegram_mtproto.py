@@ -327,7 +327,16 @@ class TelegramAdapter(MarketAdapter):
         )
         currency = (getattr(res, "currency", None) or "XTR").upper()
         # Значения приходят в минимальных единицах указанной валюты.
-        divisor = Decimal(100) if currency not in {"XTR", "TON"} else Decimal(1)
+        # Для звёзд минимальная единица — сама звезда, делить не на что.
+        # Для остальных валют, GRAM в том числе, это сотая доля.
+        #
+        # GRAM раньше стоял в исключениях вместе со звёздами, и цены по
+        # подаркам, чей резейл считается в GRAM, выходили в сто раз
+        # больше настоящих. Вместе с завышенным курсом это дало floor
+        # 198 800 ★ у коллекции, которая стоит около 500 ★, и ROI
+        # 36 000%. Проверено на двух коллекциях: после деления floor
+        # совпадает с ценой той же коллекции на Fragment и Portals.
+        divisor = Decimal(1) if currency == "XTR" else Decimal(100)
 
         def conv(v: Any) -> Decimal | None:
             return None if v is None else Decimal(v) / divisor

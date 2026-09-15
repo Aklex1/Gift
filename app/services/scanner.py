@@ -70,7 +70,26 @@ REJECTION_LABELS = {
     "blockers": "сделка убыточна после комиссий",
     "roi": "прибыль ниже порога стратегии",
     "risk": "риск выше допустимого",
+    "disagreement": "источники разошлись в цене — оценке нельзя верить",
 }
+
+#: Во сколько раз источники могут разойтись, прежде чем оценка
+#: перестанет что-либо значить.
+#:
+#: Расхождение в разы — нормальная жизнь: официальная оценка Telegram
+#: считается по всей коллекции, а floor на Portals — по конкретной
+#: модели, и редкая модель стоит кратно дороже рядовой. Десятки раз
+#: там тоже встречаются.
+#:
+#: А вот расхождение в сотни раз рынком не объясняется: floor
+#: коллекции по определению не выше floor любой её модели. Значит
+#: сломан масштаб — не та единица измерения, устаревший курс, чужая
+#: валюта. Такие числа уже дважды выглядели находкой века: лот за 504
+#: звезды при «оценке» 423 600 давал ROI 36 000%.
+#:
+#: Порог выбран с запасом: премия редкой модели к floor коллекции
+#: доходит до десятков раз, поэтому настоящую находку он не тронет.
+MAX_SOURCE_DISAGREEMENT = Decimal(50)
 
 
 def save_report(report: dict) -> None:
@@ -320,6 +339,31 @@ def _value_info_in_stars(session: Session, info: dict) -> dict | None:
         out[field] = in_stars
     out["currency"] = Currency.STARS
     return out
+
+
+def source_disagreement(
+    sources: list[MarketSnapshot],
+) -> tuple[Decimal, MarketSnapshot, MarketSnapshot] | None:
+    """Во сколько раз разошлись источники и кто именно.
+
+    Один источник проверить не на чем — ошибку в масштабе видно
+    только рядом с другим. Поэтому сравниваются все, кто назвал цену.
+
+    Returns:
+        (во сколько раз, самый дешёвый, самый дорогой) либо None,
+        когда сравнивать не с чем.
+    """
+    priced = [
+        (snapshot.floor_price or snapshot.median_price, snapshot)
+        for snapshot in sources
+    ]
+    priced = [(price, snap) for price, snap in priced if price and price > 0]
+    if len(priced) < 2:
+        return None
+
+    low_price, low = min(priced, key=lambda item: item[0])
+    high_price, high = max(priced, key=lambda item: item[0])
+    return (high_price / low_price, low, high)
 
 
 def venue_floor(sources: list[MarketSnapshot], market: Market) -> Decimal | None:
@@ -833,6 +877,25 @@ async def evaluate_listing(
         audit = audit_view(sources)
         known = live_prices(sources)
         own_floor = venue_floor(sources, dto.market)
+
+        # Источники, разошедшиеся на порядки, не оценка, а поломка
+        # масштаба: не та единица, устаревший курс, чужая валюта.
+        # Выбрать из них «самый выгодный» — значит построить сделку на
+        # сломанном числе, и выглядеть она будет тем убедительнее, чем
+        # сильнее поломка.
+        gap = source_disagreement(sources)
+        if gap is not None and gap[0] > MAX_SOURCE_DISAGREEMENT:
+            times, low, high = gap
+            log.warning(
+                "%s %s: источники разошлись в %.0f раз — %s даёт %s, "
+                "%s даёт %s. Лот пропущен.",
+                dto.gift.collection, dto.gift.model or "",
+                float(times),
+                low.source, low.floor_price or low.median_price,
+                high.source, high.floor_price or high.median_price,
+            )
+            rejections["disagreement"] += len(plan)
+            return (0, rejections)
         # Разброс цен сделок: бывают ли в этом виде подарков дешёвые
         # входы вообще. На отбор не влияет — это мера угодий, а не
         # конкретного лота, — но объясняет, почему лот дешёвый.
