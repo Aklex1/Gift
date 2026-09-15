@@ -420,11 +420,22 @@ async def execute_buy(
                 external_ref=result.external_ref,
             )
         )
+        lag = None
         if candidate is not None:
             candidate.state = "executed"
+            # Сколько прошло от первой встречи с лотом до покупки.
+            # Недооценённый лот живёт секунды, и без этого числа
+            # непонятно, проигрываем ли мы гонку и насколько.
+            if candidate.first_seen_at is not None:
+                lag = int((utcnow() - candidate.first_seen_at).total_seconds())
+                log.info(
+                    "Опоздание до покупки: %s c (лот %s на %s)",
+                    lag, candidate.listing_external_id, market.value,
+                )
 
         result_payload = {
             "ok": True,
+            "lag_sec": lag,
             "detail": f"куплено за {executed} {display_currency(executed_currency)}",
             "intent_id": intent_id,
             "position_id": position.id,

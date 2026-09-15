@@ -1253,6 +1253,25 @@ async def _sales(collection: str | None, model: str | None) -> int:
         )
         for line in report.get("failed", []):
             print(f"  ✗ {line}")
+
+        # Где вообще случаются дешёвые входы. Узкая полоса цен — сколько
+        # лот ни карауль, брать там нечего.
+        from app.db import session_scope
+        from app.services import salestats
+
+        with session_scope() as session:
+            grounds = salestats.hunting_grounds(session, limit=10)
+        if grounds:
+            print("\nГде разброс цен шире всего (разброс × скорость):")
+            for row in grounds:
+                what = row["collection"] + (f" / {row['model']}" if row["model"] else "")
+                print(
+                    f"  ×{row['spread']:<5} {row['velocity_per_day']:>6} сд/день  "
+                    f"{what} (дёшево от {row['low']:.0f}, обычно {row['median']:.0f})"
+                )
+        else:
+            print("\nСделок пока мало — разброс считать не на чем.")
+
         print("\nПо конкретному подарку: gift-cli sales --collection «имя» --model «модель»")
         return 0
 

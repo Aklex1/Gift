@@ -88,11 +88,74 @@ def _last_scan_duration() -> int:
     return int((scanner.last_report() or {}).get("duration_sec") or 0)
 
 
-def _filter_query(market: str, roi: str) -> str:
+#: Насколько лот дешевле справедливой цены. Главный показатель
+#: удачной покупки: ROI считается после комиссий и по цене продажи,
+#: а разрыв отвечает прямо — «ниже рынка настолько».
+GAP_RANGES: dict[str, Decimal | None] = {
+    "любой": None,
+    "от 20%": Decimal("0.20"),
+    "от 30%": Decimal("0.30"),
+    "от 50%": Decimal("0.50"),
+    "от 70%": Decimal("0.70"),
+}
+
+#: Как быстро такие подарки уходят. Выгода на бумаге, которую нельзя
+#: продать месяцами, — это замороженные деньги, а не прибыль.
+SPEED_RANGES: dict[str, float | None] = {
+    "любая": None,
+    "до 3 дней": 3.0,
+    "до 7 дней": 7.0,
+    "до 14 дней": 14.0,
+    "до 30 дней": 30.0,
+}
+
+#: Чем упорядочить список. Первое значение — по умолчанию.
+SORT_ORDERS: tuple[str, ...] = (
+    "по разрыву",
+    "по ROI",
+    "по скорости продажи",
+    "по риску",
+    "сначала дешёвые",
+)
+
+
+def _order_by(sort: str):
+    """Во что превращается выбранный порядок.
+
+    Порядок по сроку продажи ставит вперёд то, что уходит быстрее;
+    записи без известного срока при этом не пропадают, а уезжают в
+    конец: неизвестно — не значит «плохо».
+    """
+    from sqlalchemy import case
+
+    if sort == "по ROI":
+        return [Candidate.net_roi.desc()]
+    if sort == "по скорости продажи":
+        unknown = case((Candidate.days_to_sell.is_(None), 1), else_=0)
+        return [unknown.asc(), Candidate.days_to_sell.asc(), Candidate.net_roi.desc()]
+    if sort == "по риску":
+        return [Candidate.risk_score.asc(), Candidate.net_roi.desc()]
+    if sort == "сначала дешёвые":
+        return [Candidate.price_stars.asc()]
+    # По разрыву. У старых кандидатов его нет — они уходят в конец,
+    # а не наверх как «нулевой разрыв».
+    unknown = case((Candidate.discount.is_(None), 1), else_=0)
+    return [unknown.asc(), Candidate.discount.desc(), Candidate.net_roi.desc()]
+
+
+def _filter_query(market: str, roi: str, gap: str = "", speed: str = "",
+                  sort: str = "") -> str:
     """Собрать хвост адреса, чтобы фильтр переживал переходы."""
     from urllib.parse import urlencode
 
-    params = {k: v for k, v in (("market", market), ("roi", roi)) if v}
+    params = {
+        k: v
+        for k, v in (
+            ("market", market), ("roi", roi), ("gap", gap),
+            ("speed", speed), ("sort", sort),
+        )
+        if v
+    }
     return ("&" + urlencode(params)) if params else ""
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -227,6 +290,9 @@ async def candidates_page(
     saved: str = "",
     market: str = "",
     roi: str = "",
+    gap: str = "",
+    speed: str = "",
+    sort: str = "",
     _: str = Depends(require_auth),
 ) -> HTMLResponse:
     """Список активных кандидатов и состояние сканера."""
@@ -246,12 +312,23 @@ async def candidates_page(
         min_roi = ROI_RANGES.get(roi)
         if min_roi is not None:
             base = base.filter(Candidate.net_roi >= min_roi)
+        min_gap = GAP_RANGES.get(gap)
+        if min_gap is not None:
+            base = base.filter(Candidate.discount >= min_gap)
+        max_days = SPEED_RANGES.get(speed)
+        if max_days is not None:
+            # Неизвестный срок под фильтр по скорости не подходит:
+            # показать его здесь значило бы выдать незнание за «быстро».
+            base = base.filter(
+                Candidate.days_to_sell.isnot(None),
+                Candidate.days_to_sell <= max_days,
+            )
 
         # Показывать часть молча значит скрывать находки, о
         # существовании которых никто не узнает.
         total_pending = base.count()
         rows = (
-            base.order_by(Candidate.net_roi.desc())
+            base.order_by(*_order_by(sort or SORT_ORDERS[0]))
             .limit(CANDIDATES_SHOWN)
             .all()
         )
@@ -266,6 +343,11 @@ async def candidates_page(
                     "price": Decimal(row.price_stars),
                     "fair": Decimal(row.fair_value_stars),
                     "roi": float(row.net_roi) * 100,
+                    "gap": (
+                        float(row.discount) * 100 if row.discount is not None else None
+                    ),
+                    "days_to_sell": row.days_to_sell,
+                    "velocity": row.sale_velocity,
                     "risk": row.risk_score,
                     "confidence": str(row.confidence),
                     "rationale": row.rationale or {},
@@ -280,6 +362,9 @@ async def candidates_page(
                     "better_sale": (row.rationale or {}).get("better_sale"),
                     # Что сказал каждый источник по этому подарку.
                     "sources": (row.rationale or {}).get("sources") or [],
+                    # Разброс цен состоявшихся сделок: бывают ли в этом
+                    # виде подарков дешёвые входы вообще.
+                    "sales": (row.rationale or {}).get("sales") or {},
                     "market_value": row.market,
                 }
             )
@@ -346,8 +431,14 @@ async def candidates_page(
             "roi_ranges": list(ROI_RANGES),
             "market": market,
             "roi": roi,
+            "gap": gap,
+            "speed": speed,
+            "sort": sort or SORT_ORDERS[0],
+            "gap_ranges": list(GAP_RANGES),
+            "speed_ranges": list(SPEED_RANGES),
+            "sort_orders": list(SORT_ORDERS),
             # Фильтр не должен слетать при нажатии «Купить».
-            "filter_query": _filter_query(market, roi),
+            "filter_query": _filter_query(market, roi, gap, speed, sort),
             "running": bool(report and report.get("running")),
             "duration": int((report or {}).get("duration_sec") or 0),
             "states": recent_states,
@@ -380,6 +471,10 @@ async def position_transfer(
     result = await executor.execute_transfer(position_id, actor="web")
     if result.get("ok") is True:
         note = f"✅ {result['detail']}"
+        if result.get("lag_sec") is not None:
+            # От первой встречи с лотом до покупки. Недооценённый лот
+            # живёт секунды — по этому числу видно, в какой мы гонке.
+            note += f" (от появления лота — {result['lag_sec']} c)"
     elif result.get("ok") is None:
         note = f"⚠️ {result['detail']}"
     else:
@@ -469,11 +564,20 @@ async def candidate_buy(
     from app.services import executor
 
     form = await request.form()
+
+    def kept() -> str:
+        """Фильтр и порядок не должны слетать при нажатии «Купить»."""
+        return _filter_query(
+            str(form.get("market") or ""),
+            str(form.get("roi") or ""),
+            str(form.get("gap") or ""),
+            str(form.get("speed") or ""),
+            str(form.get("sort") or ""),
+        )
+
     if not form.get("confirmed"):
         # Первый шаг: просто разворачиваем строку с предупреждением.
-        keep = _filter_query(
-            str(form.get("market") or ""), str(form.get("roi") or "")
-        )
+        keep = kept()
         return RedirectResponse(
             f"/candidates?confirm={candidate_id}{keep}", status_code=303
         )
@@ -495,6 +599,10 @@ async def candidate_buy(
 
     if result.get("ok") is True:
         note = f"✅ {result['detail']}"
+        if result.get("lag_sec") is not None:
+            # От первой встречи с лотом до покупки. Недооценённый лот
+            # живёт секунды — по этому числу видно, в какой мы гонке.
+            note += f" (от появления лота — {result['lag_sec']} c)"
     elif result.get("ok") is None:
         note = (
             f"⚠️ {result['detail']} — повторная покупка не выполняется, "
@@ -503,10 +611,7 @@ async def candidate_buy(
     else:
         note = f"❌ Покупка не выполнена: {result.get('detail')}"
 
-    keep = _filter_query(
-        str(form.get("market") or ""), str(form.get("roi") or "")
-    )
-    return RedirectResponse(f"/candidates?saved={note}{keep}", status_code=303)
+    return RedirectResponse(f"/candidates?saved={note}{kept()}", status_code=303)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)

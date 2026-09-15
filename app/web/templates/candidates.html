@@ -51,6 +51,17 @@
       <span class="value {{ 'pos' if report.candidates }}">{{ report.candidates }}</span></div>
   </div>
 
+  {% if report.collect_sec is defined and report.collect_sec is not none %}
+  <div class="scan-markets muted" title="Медленная половина и есть то, что стоит ускорять">
+    время прохода:
+    <span class="chip">сбор {{ report.collect_sec }} c</span>
+    <span class="chip">оценка {{ report.evaluate_sec }} c</span>
+    {% if report.per_listing_ms %}
+    <span class="chip">{{ report.per_listing_ms }} мс на лот</span>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% if report.markets %}
   <div class="scan-markets muted">
     по площадкам:
@@ -172,7 +183,32 @@
       {% endfor %}
     </select>
   </label>
-  {% if market or (roi and roi != 'любой') %}
+  <label class="cap" title="Насколько лот дешевле справедливой цены">
+    Разрыв
+    <select name="gap" onchange="this.form.submit()">
+      {% for g in gap_ranges %}
+      <option value="{{ g }}" {{ 'selected' if gap == g }}>{{ g }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="cap" title="Ожидаемый срок продажи по состоявшимся сделкам">
+    Продаётся
+    <select name="speed" onchange="this.form.submit()">
+      {% for v in speed_ranges %}
+      <option value="{{ v }}" {{ 'selected' if speed == v }}>{{ v }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="cap">
+    Порядок
+    <select name="sort" onchange="this.form.submit()">
+      {% for o in sort_orders %}
+      <option value="{{ o }}" {{ 'selected' if sort == o }}>{{ o }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% if market or (roi and roi != 'любой') or (gap and gap != 'любой')
+        or (speed and speed != 'любая') or sort != sort_orders[0] %}
   <a href="/candidates" class="mini">сбросить</a>
   {% endif %}
   <noscript><button type="submit" class="mini">Применить</button></noscript>
@@ -180,7 +216,10 @@
 
 <table>
   <tr><th>Подарок</th><th>Площадка</th><th>Цена</th><th>Оценка</th>
-      <th>Продажа по</th><th>ROI</th><th>Риск</th><th>Данные</th><th></th></tr>
+      <th title="Насколько ниже справедливой цены">Разрыв</th>
+      <th>Продажа по</th><th>ROI</th>
+      <th title="Ожидаемый срок продажи">Продажа</th>
+      <th>Риск</th><th>Данные</th><th></th></tr>
   {% for c in items %}
   <tr>
     <td>{{ c.name }}</td>
@@ -188,24 +227,37 @@
     <td>{{ fmt(c.price) }} ★</td>
     <td>{{ fmt(c.fair) }} ★</td>
     <td>
+      {% if c.gap is not none %}
+        <b class="{{ 'pos' if c.gap > 0 else 'neg' }}">{{ '%.0f'|format(c.gap) }}%</b>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+    <td>
       {% if c.expected_sale %}
         {{ fmt(c.expected_sale|float|round|int) }} ★
       {% else %}<span class="muted">—</span>{% endif %}
     </td>
     <td class="{{ 'pos' if c.roi > 0 else 'neg' }}"><b>{{ '%.1f'|format(c.roi) }}%</b></td>
+    <td>
+      {% if c.days_to_sell %}
+        {{ c.days_to_sell }} дн.
+      {% else %}<span class="muted" title="Состоявшихся сделок не видно">—</span>{% endif %}
+    </td>
     <td>{{ c.risk }}/100</td>
     <td>{{ c.confidence }}</td>
     <td>
       <form method="post" action="/candidates/{{ c.id }}/buy" class="inline-form">
         <input type="hidden" name="market" value="{{ market }}">
         <input type="hidden" name="roi" value="{{ roi }}">
+        <input type="hidden" name="gap" value="{{ gap }}">
+        <input type="hidden" name="speed" value="{{ speed }}">
+        <input type="hidden" name="sort" value="{{ sort }}">
         <button type="submit" class="mini">Купить</button>
       </form>
     </td>
   </tr>
   {% if c.sources %}
   <tr>
-    <td colspan="9" style="padding-top:0">
+    <td colspan="11" style="padding-top:0">
       <table class="reject" style="font-size:12px">
         <tr>
           <th>источник</th><th class="num">медиана</th><th class="num">floor</th>
@@ -228,9 +280,29 @@
   </tr>
   {% endif %}
 
+  {% if c.sales and c.sales.sales %}
+  <tr>
+    <td colspan="11" class="muted" style="padding-top:0;font-size:12px">
+      📊 Состоявшихся сделок за месяц: <b>{{ c.sales.sales }}</b>
+      ({{ c.sales.source }}) — дёшево уходило от {{ c.sales.low }} ★,
+      обычно {{ c.sales.median }} ★, дорого до {{ c.sales.high }} ★.
+      {% if c.sales.spread %}
+      Разброс цен <b>×{{ c.sales.spread }}</b>:
+      {% if c.sales.spread >= 1.8 %}
+      дешёвые входы здесь случаются регулярно.
+      {% else %}
+      полоса узкая — сильно ниже рынка тут обычно не берут.
+      {% endif %}
+      {% else %}
+      Сделок мало — разброс по ним считать нельзя.
+      {% endif %}
+    </td>
+  </tr>
+  {% endif %}
+
   {% if c.better_sale %}
   <tr>
-    <td colspan="9" class="muted" style="padding-top:0;font-size:12px">
+    <td colspan="11" class="muted" style="padding-top:0;font-size:12px">
       💡 Выгоднее продать на <b>{{ c.better_sale.market }}</b>:
       по {{ c.better_sale.sale_price }} ★ это
       <b class="pos">{{ c.better_sale.net_roi }}</b> вместо
@@ -247,7 +319,7 @@
   {% endif %}
   {% if confirm == c.id %}
   <tr>
-    <td colspan="9">
+    <td colspan="11">
       <div class="banner danger">
         <div>
           <b>Списание {{ fmt(c.price) }} ★ за «{{ c.name }}».</b>
@@ -263,6 +335,9 @@
           <input type="hidden" name="confirmed" value="1">
           <input type="hidden" name="market" value="{{ market }}">
           <input type="hidden" name="roi" value="{{ roi }}">
+          <input type="hidden" name="gap" value="{{ gap }}">
+          <input type="hidden" name="speed" value="{{ speed }}">
+          <input type="hidden" name="sort" value="{{ sort }}">
           <button type="submit">Подтвердить покупку</button>
         </form>
       </div>
@@ -270,7 +345,7 @@
   </tr>
   {% endif %}
   {% else %}
-  <tr><td colspan="9" class="muted">Активных кандидатов нет</td></tr>
+  <tr><td colspan="11" class="muted">Активных кандидатов нет</td></tr>
   {% endfor %}
 </table>
 

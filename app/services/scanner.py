@@ -36,7 +36,8 @@ from app.enums import Currency, Market
 from app.models import Candidate, utcnow
 from app.services import gifts as gifts_service
 from app.services import arbitrage
-from app.services import marketdata, strategy as strategy_service, valuation
+from app.services import marketdata, salestats
+from app.services import strategy as strategy_service, valuation
 from app.services.marketdata import MarketSnapshot
 
 log = logging.getLogger(__name__)
@@ -469,8 +470,18 @@ def choose_primary(
     сводку аудита.
 
     Порядок: floor модели точнее всего для редких моделей, официальная
-    оценка Telegram — для подарков Telegram, собственная выборка —
-    последняя.
+    оценка Telegram — для подарков Telegram, затем состоявшиеся сделки
+    на Fragment, и последней — собственная выборка.
+
+    Сделки Fragment стоят ниже площадочных оценок намеренно. Они
+    честнее по природе — это цена, по которой заплатили, а не по
+    которой просят, — но сняты с другой площадки, а туда подарок
+    попадает через вывод на блокчейн и потому обычно стоит дешевле.
+    Взять их за справедливую цену для лота в Telegram значит занизить
+    её. Занижение безопасно (кандидатов станет меньше, а не больше),
+    и на этом основании Fragment всё же идёт впереди собственной
+    выборки: несколько десятков чужих сделок содержательнее пары
+    наших наблюдений.
     """
     if not sources:
         return None
@@ -478,8 +489,9 @@ def choose_primary(
     priority = {
         "portals_attribute_floor": 0,
         "telegram_value_info": 1 if market is Market.TELEGRAM else 2,
+        f"market:{Market.FRAGMENT.value}": 3,
     }
-    return min(sources, key=lambda s: priority.get(s.source, 3))
+    return min(sources, key=lambda s: priority.get(s.source, 4))
 
 
 async def snapshot_for_listing(
@@ -649,6 +661,12 @@ async def scan_once() -> dict:
         save_report(report)
         return report
 
+    # Сколько заняли сбор лотов и сколько — их оценка. Разбивка нужна
+    # не для отчётности: медленная половина и есть то, что стоит
+    # ускорять, а без замера это гадание.
+    collected_at = utcnow()
+    report["collect_sec"] = round((collected_at - started).total_seconds(), 1)
+
     # --- сохранение лотов ---
     with session_scope() as session:
         await refresh_fx(session)
@@ -690,6 +708,15 @@ async def scan_once() -> dict:
     report["rejections"] = dict(rejections)
     report["finished_at"] = utcnow().isoformat(timespec="seconds")
     report["duration_sec"] = int((utcnow() - started).total_seconds())
+    report["evaluate_sec"] = round(
+        (utcnow() - collected_at).total_seconds(), 1
+    )
+    if all_listings:
+        # Время на один лот — то число, по которому видно, во что
+        # упрётся более частый обход.
+        report["per_listing_ms"] = int(
+            (utcnow() - collected_at).total_seconds() * 1000 / len(all_listings)
+        )
     if not created and rejections:
         top = rejections.most_common(1)[0][0]
         report["note"] = (
@@ -704,6 +731,37 @@ async def scan_once() -> dict:
         created,
     )
     return report
+
+
+def price_gap(fair_value: Decimal, price: Decimal) -> Decimal | None:
+    """На сколько лот дешевле справедливой цены.
+
+    Не то же самое, что ROI. ROI считается после комиссий и по той
+    цене, по которой мы рассчитываем продать (а она бывает ниже
+    оценки, если floor ниже медианы). Разрыв отвечает на более простой
+    вопрос — «насколько ниже рынка», — и именно им меряют удачную
+    покупку в каналах находок.
+    """
+    if fair_value <= 0:
+        return None
+    return (fair_value - price) / fair_value
+
+
+def first_seen(session: Session, dto: ListingDTO) -> "dt.datetime | None":
+    """Когда этот лот впервые попался нам на глаза.
+
+    Лот перезаписывается на каждом проходе, поэтому «когда увидели в
+    последний раз» не годится: разница с моментом покупки и есть наше
+    опоздание, а по свежему seen_at она всегда близка к нулю.
+    """
+    from app.models import Listing
+
+    row = (
+        session.query(Listing)
+        .filter_by(market=dto.market, external_id=dto.external_id)
+        .first()
+    )
+    return getattr(row, "created_at", None) if row is not None else None
 
 
 def _sale_hint(best: dict | None) -> dict | None:
@@ -745,6 +803,13 @@ async def evaluate_listing(
         snapshot = marketdata.with_observed_velocity(session, snapshot)
         audit = audit_view(sources)
         known = live_prices(sources)
+        # Разброс цен сделок: бывают ли в этом виде подарков дешёвые
+        # входы вообще. На отбор не влияет — это мера угодий, а не
+        # конкретного лота, — но объясняет, почему лот дешёвый.
+        stats = salestats.sale_stats(
+            session, collection=dto.gift.collection, model=dto.gift.model
+        )
+        seen_first = first_seen(session, dto)
         adapter = get_adapter(dto.market)
         is_official = (
             adapter.status_of(Capability.BUY) is CapabilityStatus.SUPPORTED
@@ -832,11 +897,17 @@ async def evaluate_listing(
                 exists.net_roi = result.net_roi
                 exists.risk_score = result.risk_score
                 exists.confidence = result.confidence
+                exists.discount = price_gap(result.fair_value, price_stars)
+                exists.days_to_sell = snapshot.days_to_sell
+                exists.sale_velocity = snapshot.velocity_per_day or None
+                if exists.first_seen_at is None:
+                    exists.first_seen_at = seen_first
                 exists.rationale = {
                     **result.as_dict(),
                     "market": snapshot.as_dict(),
                     "sources": audit,
                     "better_sale": _sale_hint(elsewhere),
+                    "sales": stats.as_dict(),
                 }
                 exists.expires_at = utcnow() + CANDIDATE_TTL
                 continue
@@ -854,11 +925,16 @@ async def evaluate_listing(
                     net_roi=result.net_roi,
                     risk_score=result.risk_score,
                     confidence=result.confidence,
+                    discount=price_gap(result.fair_value, price_stars),
+                    days_to_sell=snapshot.days_to_sell,
+                    sale_velocity=snapshot.velocity_per_day or None,
+                    first_seen_at=seen_first,
                     rationale={
                         **result.as_dict(),
                         "market": snapshot.as_dict(),
                         "sources": audit,
                         "better_sale": _sale_hint(elsewhere),
+                        "sales": stats.as_dict(),
                     },
                     state="pending",
                     expires_at=utcnow() + CANDIDATE_TTL,

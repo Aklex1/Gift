@@ -14,6 +14,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -598,6 +599,20 @@ class Candidate(Base, TimestampMixin):
     net_roi: Mapped[Decimal] = mapped_column(Money, index=True)
     risk_score: Mapped[int] = mapped_column(Integer)
     confidence: Mapped[Confidence] = mapped_column(EnumStr(Confidence))
+
+    #: Насколько лот дешевле справедливой цены: (fair - price) / fair.
+    #: Не то же, что ROI: тот считается после комиссий и по цене, по
+    #: которой мы рассчитываем продать. Разрыв — это «ниже рынка
+    #: настолько», то самое число, которым меряют удачную покупку.
+    discount: Mapped[Decimal | None] = mapped_column(Money, index=True)
+    #: Ожидаемый срок продажи в днях. Пусто — скорость неизвестна.
+    days_to_sell: Mapped[float | None] = mapped_column(Float, index=True)
+    #: Сколько таких подарков уходит в день по данным о сделках.
+    sale_velocity: Mapped[float | None] = mapped_column(Float)
+    #: Когда лот впервые попался на глаза. Разница с моментом покупки
+    #: и есть наше опоздание — без неё ускорять нечего.
+    first_seen_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
     #: Человекочитаемое обоснование решения.
     rationale: Mapped[dict] = mapped_column(JSON, default=dict)
 
