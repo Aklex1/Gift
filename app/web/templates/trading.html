@@ -161,6 +161,37 @@
 </form>
 
 <h2>Курсы валют</h2>
+<h2>Сканер</h2>
+<p class="muted">
+  Как часто бот обходит рынок. Чем чаще, тем свежее находки — но
+  площадки начинают отвечать лимитами, а проход, который не успевает
+  закончиться, просто пропускает следующий запуск.
+  {% if last_scan_sec %}
+  <br>Последний проход занял <b>{{ last_scan_sec }} c</b>.
+    {% if last_scan_sec > scan_interval %}
+    <b class="danger">Это дольше интервала</b> — запуски пропускаются.
+    Поставьте хотя бы {{ (last_scan_sec * 1.5) | round | int }} c
+    либо сузьте список коллекций в стратегии.
+    {% endif %}
+  {% endif %}
+</p>
+<form method="post" action="/trading/scan-interval">
+  <div class="market">
+    <label class="cap">
+      Интервал сканирования
+      <input type="text" name="scan_interval" inputmode="numeric"
+             value="{{ scan_interval }}">
+      <span class="unit">c</span>
+    </label>
+    <span class="muted">допустимо {{ scan_min }}–{{ scan_max }}</span>
+  </div>
+  <div class="actions"><button type="submit">Сохранить</button></div>
+</form>
+<p class="muted">
+  Перезапускать воркер не нужно: он сверяет настройку каждые 30 секунд
+  и пересобирает расписание сам.
+</p>
+
 <h2>Перенос подарков</h2>
 <p class="muted">
   Продажа на Portals стоит около 2.5% против 20% в Telegram, поэтому

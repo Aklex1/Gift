@@ -223,3 +223,42 @@ def transfer_enabled() -> bool:
 def set_transfer_enabled(value: bool) -> None:
     """Включить или выключить перенос подарков."""
     store.set(KEY_TRANSFER, "1" if value else "0")
+
+
+# ----------------------------------------------------------------------
+# Интервал сканирования
+# ----------------------------------------------------------------------
+#: Как часто сканер обходит рынок, в секундах.
+KEY_SCAN_INTERVAL = "SCAN_INTERVAL_SEC"
+
+#: Границы разумного. Ниже 15 секунд площадки начнут отвечать лимитами,
+#: выше часа находки успевают устареть до того, как их увидят.
+SCAN_INTERVAL_MIN = 15
+SCAN_INTERVAL_MAX = 3600
+
+
+def scan_interval() -> int:
+    """Текущий интервал сканирования.
+
+    Живёт в общем хранилище, а не только в .env: воркер и панель —
+    разные процессы, и значение из файла панель бы не увидела.
+    """
+    raw = store.get(KEY_SCAN_INTERVAL)
+    if raw is None:
+        return int(settings.scan_interval_sec or 60)
+    try:
+        value = int(Decimal(raw.strip()))
+    except (InvalidOperation, ValueError):
+        return int(settings.scan_interval_sec or 60)
+    return max(SCAN_INTERVAL_MIN, min(SCAN_INTERVAL_MAX, value))
+
+
+def set_scan_interval(value: int) -> int:
+    """Задать интервал сканирования, подрезав до разумных границ.
+
+    Returns:
+        Что действительно сохранено.
+    """
+    clamped = max(SCAN_INTERVAL_MIN, min(SCAN_INTERVAL_MAX, int(value)))
+    store.set(KEY_SCAN_INTERVAL, str(clamped))
+    return clamped

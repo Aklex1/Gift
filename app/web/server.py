@@ -52,6 +52,13 @@ ROI_RANGES: dict[str, Decimal | None] = {
 }
 
 
+def _last_scan_duration() -> int:
+    """Сколько занял последний проход — чтобы подсказать интервал."""
+    from app.services import scanner
+
+    return int((scanner.last_report() or {}).get("duration_sec") or 0)
+
+
 def _filter_query(market: str, roi: str) -> str:
     """Собрать хвост адреса, чтобы фильтр переживал переходы."""
     from urllib.parse import urlencode
@@ -275,7 +282,7 @@ async def candidates_page(
                 # поломку в исправном воркере.
                 running = bool(report.get("running"))
                 duration = int(report.get("duration_sec") or 0)
-                budget = max(settings.scan_interval_sec, duration) * 3
+                budget = max(runtime.scan_interval(), duration) * 3
                 stale = not running and age_sec > budget
             except (ValueError, TypeError):
                 pass
@@ -315,7 +322,7 @@ async def candidates_page(
             "running": bool(report and report.get("running")),
             "duration": int((report or {}).get("duration_sec") or 0),
             "states": recent_states,
-            "scan_interval": settings.scan_interval_sec,
+            "scan_interval": runtime.scan_interval(),
             "fmt": gifts_service.format_stars,
             "confirm": confirm,
             "saved": saved,
@@ -349,6 +356,48 @@ async def position_transfer(
     else:
         note = f"❌ {result.get('detail')}"
     return RedirectResponse(f"/portfolio?saved={note}", status_code=303)
+
+
+@app.post("/trading/scan-interval")
+async def trading_scan_interval(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Задать интервал сканирования.
+
+    Значение живёт в общем хранилище, и воркер подхватывает его на
+    ходу — перезапускать службу не нужно.
+    """
+    from app.models import AuditLog
+    from app.services import runtime
+
+    form = await request.form()
+    raw = str(form.get("scan_interval") or "").strip()
+    try:
+        wanted = int(Decimal(raw))
+    except (InvalidOperation, ValueError):
+        return RedirectResponse(
+            "/trading?saved=Интервал должен быть числом секунд", status_code=303
+        )
+
+    applied = runtime.set_scan_interval(wanted)
+    with session_scope() as session:
+        session.add(
+            AuditLog(
+                actor="web",
+                action="runtime.scan_interval",
+                target="SCAN_INTERVAL_SEC",
+                payload={"requested": wanted, "applied": applied},
+            )
+        )
+
+    note = f"Интервал сканирования: {applied} c"
+    if applied != wanted:
+        note += (
+            f" (запрошено {wanted}, допустимо "
+            f"{runtime.SCAN_INTERVAL_MIN}–{runtime.SCAN_INTERVAL_MAX})"
+        )
+    note += ". Воркер подхватит в течение 30 секунд."
+    return RedirectResponse(f"/trading?saved={note}", status_code=303)
 
 
 @app.post("/trading/transfer")
@@ -702,6 +751,10 @@ async def trading_page(
                 and secrets_module.resolve("OWNER_IDS", settings.owner_ids).strip()
             ),
             "transfer_on": runtime.transfer_enabled(),
+            "scan_interval": runtime.scan_interval(),
+            "scan_min": runtime.SCAN_INTERVAL_MIN,
+            "scan_max": runtime.SCAN_INTERVAL_MAX,
+            "last_scan_sec": _last_scan_duration(),
             "arb": {
                 "enabled": arbitrage.enabled(),
                 "min_roi_pct": arbitrage.min_roi() * 100,

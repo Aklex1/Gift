@@ -24,6 +24,7 @@ from app.db import init_db, session_scope
 from app.enums import Market
 from app.logging_conf import setup_logging
 from app.services import budget as budget_service
+from app.services import runtime
 from app.services import portfolio, reconciler, repricer, scanner
 
 log = logging.getLogger(__name__)
@@ -202,6 +203,26 @@ async def task_maintenance() -> None:
     await _guarded("maintenance", run)
 
 
+def apply_scan_interval(scheduler) -> None:
+    """Привести расписание скана к текущей настройке.
+
+    Значение меняют из панели — в другом процессе, — поэтому проверяем
+    его периодически и пересобираем задание, когда оно разошлось с
+    расписанием.
+    """
+    wanted = runtime.scan_interval()
+    job = scheduler.get_job("scan")
+    if job is None:
+        return
+    current = getattr(job.trigger, "interval", None)
+    current_sec = int(current.total_seconds()) if current else None
+    if current_sec == wanted:
+        return
+
+    scheduler.reschedule_job("scan", trigger="interval", seconds=wanted)
+    log.info("Интервал сканирования изменён: %s c -> %s c", current_sec, wanted)
+
+
 async def main() -> None:
     """Запустить планировщик."""
     setup_logging("worker")
@@ -210,7 +231,7 @@ async def main() -> None:
 
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
-        task_scan, "interval", seconds=settings.scan_interval_sec, id="scan"
+        task_scan, "interval", seconds=runtime.scan_interval(), id="scan"
     )
     scheduler.add_job(
         task_reprice, "interval", seconds=settings.reprice_interval_sec, id="reprice"
@@ -231,6 +252,15 @@ async def main() -> None:
     # Канал публикует раз в сутки — чаще получаса смотреть незачем.
     scheduler.add_job(task_feed, "interval", seconds=1800, id="feed")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
+    # Интервал сканирования меняют из панели, а планировщику он задан
+    # при запуске. Без пересборки задания настройка молча не работала
+    # бы до перезапуска воркера.
+    scheduler.add_job(
+        lambda: apply_scan_interval(scheduler),
+        "interval",
+        seconds=30,
+        id="scan_interval",
+    )
     scheduler.start()
 
     # Курсы нужны сразу: без них первые же расчёты будут приблизительными.
@@ -240,7 +270,7 @@ async def main() -> None:
 
     log.info(
         "Воркеры запущены: скан %s c, репрайс %s c, сверка %s c",
-        settings.scan_interval_sec,
+        runtime.scan_interval(),
         settings.reprice_interval_sec,
         settings.reconcile_interval_sec,
     )
