@@ -1464,7 +1464,11 @@ async def _spread(collection: str | None) -> int:
     init_db()
     with session_scope() as session:
         table, notes = await venues.quotes_for(session, collection)
-        rows = venues.spreads(table)
+        rows = venues.spreads(table, session)
+        seen = sorted(
+            {m for per in table.values() for m in per}, key=lambda m: m.value
+        )
+        fees = venues.sale_fee_rates(session, seen)
 
     for note in notes:
         print(f"  ✗ {note}")
@@ -1473,25 +1477,40 @@ async def _spread(collection: str | None) -> int:
         print("\nНи одна площадка не вернула лотов с моделями.")
         return 0
 
-    markets = sorted({m.value for per in table.values() for m in per})
     print(f"\n=== {collection}: цены по моделям ===")
-    print(f"площадки в сравнении: {', '.join(markets)}")
+    print("площадки в сравнении: " + ", ".join(
+        f"{m.value} (комиссия продажи {fees[m]:.0%})" for m in seen
+    ))
 
     if not rows:
         print("\nМодели нашлись только на одной площадке — сравнивать не с чем.")
         print("Подключите ещё площадку: панель → «Настройки» → токены.")
         return 0
 
-    print(f"\n{'модель':<20} {'купить':>22} {'продать':>22} {'разница':>9}")
+    print("\nНаправление выбрано по остатку после комиссий, а не по размаху:")
+    print("самая дорогая площадка обычно та, у которой выше комиссия продажи.")
+    print(f"\n{'модель':<18} {'купить':>21} {'продать':>21} "
+          f"{'разница':>8} {'после комиссий':>15}")
     for row in rows[:20]:
         buy, sell = row["buy"], row["sell"]
         left = f"{buy.price} {display_currency(buy.currency)} ({row['buy_market'].value})"
         right = f"{sell.price} {display_currency(sell.currency)} ({row['sell_market'].value})"
-        print(f"{row['model']:<20} {left:>22} {right:>22} {row['gap']:>8.1%}")
+        net = row.get("net_roi")
+        tail = "—" if net is None else f"{net:+.1%}"
+        mark = "" if net is None or net <= 0 else "  ←"
+        print(f"{row['model']:<18} {left:>21} {right:>21} "
+              f"{row['gap']:>7.1%} {tail:>15}{mark}")
 
-    print("\nРазница — это ещё не прибыль: из неё вычтутся комиссия продажи")
-    print("и перенос подарка между площадками. Порог связки задаётся в")
-    print("панели → «Торговля» → «Разница цен между площадками».")
+    good = [r for r in rows if (r.get("net_roi") or 0) > 0]
+    print()
+    if good:
+        print(f"Связок в плюсе после комиссий: {len(good)} из {len(rows)}.")
+    else:
+        print("После комиссий в плюсе ни одной — и это нормальный ответ.")
+        print("Разница цен между площадками чаще всего и есть комиссия той,")
+        print("где дороже: у Telegram она 20%, и заявки там стоят примерно на")
+        print("столько же выше, чем на площадках GRAM.")
+    print("Перенос подарка между площадками — отдельный шаг, вручную.")
     return 0
 
 

@@ -5,10 +5,16 @@
 стоил 7.20 на Portals, 7.42 и 8.79 на MRKT, 7.71 на Tonnel — размах
 22% на одной модели.
 
-Это и есть механика, которой не нужен никакой прогноз: купить там, где
-дешевле, выставить там, где дороже. В отличие от оценки «сколько это
-стоит на самом деле», здесь обе цены названы рынком, и ошибиться можно
-только в комиссиях и в переносе.
+Это и есть механика, которой не нужен никакой прогноз: обе цены названы
+рынком, и ошибиться можно только в комиссиях и в переносе. Но именно в
+них и ошибаются: «купить где дешевле, продать где дороже» — неверное
+правило. Самая дорогая площадка обычно та, у которой выше комиссия с
+продажи: Telegram удерживает 20%, площадки на TON — единицы процентов,
+и заявки это уже учитывают. Разница цен в 18% в сторону Telegram — это
+его комиссия, а не находка: после неё остаётся минус 5%.
+
+Поэтому направление здесь выбирается по остатку после комиссий и
+переноса, а размах цен показывается рядом как справка.
 
 Здесь — измерительный прибор, а не торговля. Он показывает картину до
 того, как подключать площадку к сканеру: стоит ли она запросов.
@@ -107,8 +113,88 @@ async def quotes_for(
     return table, notes
 
 
-def spreads(table: dict[str, dict[Market, Quote]]) -> list[dict]:
-    """Где одна и та же модель стоит по-разному.
+def net_after_fees(
+    session: Session, *, buy_market: Market, buy: Decimal,
+    sell_market: Market, sell: Decimal,
+) -> Decimal | None:
+    """Что останется от разницы после комиссий и переноса.
+
+    Без этого таблица цен читается неверно, и это не гипотеза: у
+    Telegram комиссия с продажи 20%, поэтому его заявки стоят примерно
+    на столько же выше, чем на площадках TON. Разница в цене 18%
+    выглядит находкой, а после комиссии оборачивается убытком в 5%.
+    """
+    from app.services import arbitrage, valuation
+
+    buy_fees = valuation.fees_in(
+        session, valuation.get_fees(session, buy_market), Currency.STARS
+    )
+    sell_fees = valuation.fees_in(
+        session, valuation.get_fees(session, sell_market), Currency.STARS
+    )
+    transfer = marketdata.to_stars(
+        session, arbitrage.transfer_cost_ton(), Currency.TON
+    ) or Decimal(0)
+
+    cost = valuation.total_cost_of(buy, buy_fees) + transfer
+    if cost <= 0:
+        return None
+    proceeds = valuation.net_proceeds_from(sell, sell_fees)
+    return (proceeds - cost) / cost
+
+
+def sale_fee_rates(session: Session, markets: list[Market]) -> dict[Market, Decimal]:
+    """Сколько площадка удерживает с продажи.
+
+    Нужна не для расчёта, а чтобы таблицу можно было прочитать: пока
+    комиссия не названа, разница цен выглядит прибылью.
+    """
+    from app.services import valuation
+
+    return {
+        market: valuation.get_fees(session, market).total_sale_rate
+        for market in markets
+    }
+
+
+def best_direction(
+    session: Session, priced: dict[Market, Quote]
+) -> tuple[Market, Quote, Market, Quote, Decimal] | None:
+    """Пара площадок, на которой остаётся больше всего после комиссий.
+
+    Не «где дешевле» и «где дороже». Самая дорогая площадка почти
+    всегда та, у которой выше комиссия с продажи: Telegram удерживает
+    20%, площадки на TON — единицы процентов, и заявки это учитывают.
+    Поэтому пара с наибольшей разницей цен и пара, на которой остаются
+    деньги, — это, как правило, разные пары.
+
+    Returns:
+        ``(площадка покупки, лот, площадка продажи, лот, остаток)`` или
+        ``None``, если ни одна пара не считается.
+    """
+    best: tuple[Market, Quote, Market, Quote, Decimal] | None = None
+    for buy_market, buy in priced.items():
+        for sell_market, sell in priced.items():
+            if buy_market is sell_market:
+                continue
+            if sell.price_stars <= buy.price_stars:
+                continue
+            net = net_after_fees(
+                session,
+                buy_market=buy_market, buy=buy.price_stars,
+                sell_market=sell_market, sell=sell.price_stars,
+            )
+            if net is None:
+                continue
+            if best is None or net > best[4]:
+                best = (buy_market, buy, sell_market, sell, net)
+    return best
+
+
+def spreads(
+    table: dict[str, dict[Market, Quote]], session: Session | None = None
+) -> list[dict]:
+    """Где одну и ту же модель выгодно перекладывать между площадками.
 
     Сравнение идёт в Stars: площадки номинируют цены в разных валютах,
     и сравнивать GRAM с Stars напрямую значило бы выдать курс за
@@ -116,6 +202,12 @@ def spreads(table: dict[str, dict[Market, Quote]]) -> list[dict]:
 
     Модели, которые нашлись лишь на одной площадке, в сводку не идут —
     сравнивать не с чем, а не «разницы нет».
+
+    Args:
+        session: с ней направление выбирается по остатку после
+            комиссий и переноса, а не по размаху цен. Без неё берутся
+            самая дешёвая и самая дорогая площадка — это видно как
+            разница, но читать её как прибыль нельзя.
     """
     out: list[dict] = []
     for model, per_market in table.items():
@@ -127,19 +219,38 @@ def spreads(table: dict[str, dict[Market, Quote]]) -> list[dict]:
         if len(priced) < 2:
             continue
 
-        cheap_market, cheap = min(priced.items(), key=lambda kv: kv[1].price_stars)
-        dear_market, dear = max(priced.items(), key=lambda kv: kv[1].price_stars)
+        chosen = best_direction(session, priced) if session is not None else None
+        if chosen is not None:
+            buy_market, buy, sell_market, sell, net = chosen
+        else:
+            # Либо считаем без сессии, либо все цены равны и
+            # направления нет. Показываем размах — но без остатка.
+            buy_market, buy = min(priced.items(), key=lambda kv: kv[1].price_stars)
+            sell_market, sell = max(priced.items(), key=lambda kv: kv[1].price_stars)
+            net = None
+
         out.append(
             {
                 "model": model,
-                "buy_market": cheap_market,
-                "buy": cheap,
-                "sell_market": dear_market,
-                "sell": dear,
-                "gap": (dear.price_stars / cheap.price_stars) - Decimal(1),
+                "buy_market": buy_market,
+                "buy": buy,
+                "sell_market": sell_market,
+                "sell": sell,
+                "gap": (sell.price_stars / buy.price_stars) - Decimal(1),
+                "net_roi": net,
                 "venues": len(priced),
             }
         )
 
-    out.sort(key=lambda row: row["gap"], reverse=True)
+    # С комиссиями сортируем по тому, что остаётся: строка с размахом
+    # 18% и убытком 5% не должна стоять выше прибыльной с размахом 6%.
+    if session is not None:
+        out.sort(
+            key=lambda row: (
+                row["net_roi"] if row["net_roi"] is not None else Decimal(-99)
+            ),
+            reverse=True,
+        )
+    else:
+        out.sort(key=lambda row: row["gap"], reverse=True)
     return out
