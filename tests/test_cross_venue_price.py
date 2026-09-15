@@ -279,3 +279,88 @@ def test_threshold_leaves_room_for_rare_models():
 
     assert gap[0] == Decimal(30)
     assert gap[0] < scanner.MAX_SOURCE_DISAGREEMENT
+
+
+# --- floor признака, а не только модели --------------------------------
+#
+# Живой экран: Mousse Cake #16119 на Portals.
+#
+#   Model     Crypto Chips  0.5%   18.4 GRAM
+#   Symbol    Butterfly     0.6%    5.51 GRAM
+#   Backdrop  Black         1%     21.24 GRAM
+#   Мин. цена коллекции             5 GRAM
+#
+# «Мин. цена» — floor всей коллекции, самый дешёвый Mousse Cake любого
+# вида. К этому подарку она отношения не имеет: у него три редких
+# признака сразу.
+
+
+FLOORS = {
+    "models": {"Crypto Chips": "18.4", "Glacier": "5"},
+    "symbols": {"Butterfly": "5.51", "Top Hat": "5"},
+    "backdrops": {"Black": "21.24", "Neon Blue": "3.95"},
+}
+
+
+def _gift(model=None, backdrop=None, symbol=None):
+    from app.adapters.base import GiftRef
+
+    return GiftRef(collection="Mousse Cake", number=16119,
+                   model=model, backdrop=backdrop, symbol=symbol)
+
+
+def test_rarest_trait_sets_the_price():
+    """Подарок стоит не меньше самого дорогого из своих признаков.
+
+    Иначе покупателю пришлось бы взять самый дешёвый лот с этим
+    признаком — а он и стоит floor.
+    """
+    floor, why = scanner.rarest_attribute_floor(
+        FLOORS, _gift("Crypto Chips", "Black", "Butterfly")
+    )
+
+    assert floor == Decimal("21.24")
+    assert "фон" in why and "Black" in why
+
+
+def test_rare_backdrop_on_a_common_model_is_not_missed():
+    """Рядовая модель с редким фоном больше не оценивается по модели.
+
+    Раньше брался только floor модели: такой подарок выглядел дорогим
+    и отбрасывался, хотя один его фон стоил вчетверо больше.
+    """
+    floor, why = scanner.rarest_attribute_floor(FLOORS, _gift("Glacier", "Black"))
+
+    assert floor == Decimal("21.24")
+    assert "фон" in why
+
+
+def test_unknown_traits_are_skipped():
+    """Признак, которого нет в таблице площадки, просто пропускается."""
+    floor, _ = scanner.rarest_attribute_floor(
+        FLOORS, _gift("Неизвестная", "Black")
+    )
+
+    assert floor == Decimal("21.24")
+
+
+def test_gift_without_known_traits_has_no_floor():
+    """Без единого известного признака floor взять неоткуда.
+
+    Подставлять сюда цену коллекции нельзя: она про рядовой экземпляр,
+    а не про этот.
+    """
+    floor, why = scanner.rarest_attribute_floor(FLOORS, _gift("Нет", "Нет", "Нет"))
+
+    assert floor is None and why is None
+
+
+def test_collection_floor_is_not_used_as_a_trait():
+    """Floor коллекции в расчёт признаков не попадает.
+
+    Он равен цене самого дешёвого экземпляра любого вида — для
+    подарка с редкими признаками это занижение в разы.
+    """
+    floor, _ = scanner.rarest_attribute_floor(FLOORS, _gift(symbol="Butterfly"))
+
+    assert floor == Decimal("5.51")

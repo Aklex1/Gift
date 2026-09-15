@@ -29,6 +29,7 @@ from app.adapters.base import (
     RateLimited,
     SearchSkipped,
 )
+from app.adapters.base import GiftRef
 from app.adapters.registry import get_adapter
 from app.adapters.telegram_mtproto import TelegramAdapter
 from app.db import session_scope
@@ -402,6 +403,43 @@ def live_prices(sources: list[MarketSnapshot]) -> dict[Market, Decimal]:
     return out
 
 
+def rarest_attribute_floor(
+    floors: dict, gift: "GiftRef"
+) -> tuple[Decimal | None, str | None]:
+    """Самый дорогой из floor'ов признаков этого подарка.
+
+    Площадка считает минимальную цену отдельно по модели, символу и
+    фону. У подарка все три сразу, и стоит он не меньше самого дорогого
+    из них: чтобы получить его признак, покупателю иначе пришлось бы
+    взять самый дешёвый лот с этим признаком — а он и стоит floor.
+
+    Раньше брался только floor модели. Подарок с рядовой моделью и
+    редким фоном оценивался по модели и выглядел дорогим — его просто
+    пропускали, хотя один фон стоил вчетверо больше.
+
+    Returns:
+        (floor в валюте площадки, какой признак его дал).
+    """
+    best: Decimal | None = None
+    reason: str | None = None
+    for section, value, label in (
+        ("models", gift.model, "модель"),
+        ("backdrops", gift.backdrop, "фон"),
+        ("symbols", gift.symbol, "символ"),
+    ):
+        if not value:
+            continue
+        raw = (floors.get(section) or {}).get(value)
+        if not raw:
+            continue
+        price = Decimal(str(raw))
+        if price <= 0:
+            continue
+        if best is None or price > best:
+            best, reason = price, f"{label} {value}"
+    return best, reason
+
+
 async def gather_sources(
     session: Session, dto: ListingDTO
 ) -> list[MarketSnapshot]:
@@ -453,19 +491,23 @@ async def gather_sources(
             except Exception as exc:  # noqa: BLE001 - источник необязательный
                 log.debug("value_info для %s недоступен: %s", slug, exc)
 
-    # 2. Floor модели на Portals.
-    if dto.gift.model:
+    # 2. Floor признаков на Portals — по самому дорогому из них.
+    if dto.gift.model or dto.gift.backdrop or dto.gift.symbol:
         adapter = get_adapter(Market.PORTALS)
         floors = getattr(adapter, "attribute_floors", None)
         if floors is not None:
             try:
                 data = await floors(dto.gift.collection)
-                model_floor = (data.get("models") or {}).get(dto.gift.model)
-                if model_floor:
+                attr_floor, why = rarest_attribute_floor(data, dto.gift)
+                if attr_floor:
                     floor_stars = marketdata.to_stars(
-                        session, Decimal(str(model_floor)), Currency.TON
+                        session, attr_floor, Currency.TON
                     )
                     if floor_stars:
+                        log.debug(
+                            "%s: floor признака — %s (%s)",
+                            dto.external_id, attr_floor, why,
+                        )
                         sources.append(
                             marketdata.snapshot_from_attribute_floor(
                                 collection=dto.gift.collection,
@@ -476,7 +518,7 @@ async def gather_sources(
                             )
                         )
             except Exception as exc:  # noqa: BLE001
-                log.debug("Portals: floor модели недоступен: %s", exc)
+                log.debug("Portals: floor признаков недоступен: %s", exc)
 
     # 3. Состоявшиеся продажи на Fragment — цена сделки и её время.
     #    Единственный источник, который отвечает не «почём просят», а
