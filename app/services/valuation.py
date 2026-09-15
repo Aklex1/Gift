@@ -301,6 +301,7 @@ def evaluate(
     snapshot: MarketSnapshot,
     is_official_api: bool,
     target_markup: Decimal = Decimal("0"),
+    venue_floor: Decimal | None = None,
 ) -> Valuation:
     """Оценить сделку «купить на A — продать на B».
 
@@ -308,6 +309,11 @@ def evaluate(
         buy_price: цена покупки в Stars.
         snapshot: срез рынка для этого типа подарка.
         target_markup: желаемая наценка сверх справедливой цены.
+        venue_floor: минимальная цена таких лотов на той площадке, где
+            продаём, в Stars. Потолок для цены продажи: выше самого
+            дешёвого конкурента лот не уйдёт. Нужен, когда оценка
+            пришла с другой площадки — там подарок может стоить в разы
+            дороже, и без этого потолка ROI рисуется кратным.
 
     Returns:
         Полная оценка с ROI, риском и списком блокеров.
@@ -334,6 +340,14 @@ def evaluate(
         reasons.append(
             f"расчёт по floor {snapshot.floor_price}, он ниже медианы {fair_value}"
         )
+    # Потолок площадки, где продаём: выше самого дешёвого конкурента
+    # лот не уйдёт, какой бы ни была оценка с чужой площадки.
+    if venue_floor and venue_floor > 0 and venue_floor < expected_sale:
+        reasons.append(
+            f"на {sell_market.value} такие лоты стоят от {venue_floor} — "
+            f"дороже не продать, хотя оценка {expected_sale}"
+        )
+        expected_sale = venue_floor
     if target_markup > 0:
         expected_sale = expected_sale * (Decimal(1) + target_markup)
         reasons.append(f"наценка стратегии +{target_markup:.0%}")

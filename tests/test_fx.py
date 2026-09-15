@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 
 from app.enums import Currency
+from app.models import utcnow
 from app.services import fx, marketdata, store
 
 
@@ -103,3 +104,149 @@ def test_invalid_manual_price_ignored(session):
     assert fx.manual_star_usd() is None
     store.set(fx.MANUAL_STAR_USD_KEY, "-5")
     assert fx.manual_star_usd() is None
+
+
+# --- правдоподобие цены звезды ----------------------------------------
+#
+# Курс Stars/GRAM выводится делением курса GRAM на цену звезды.
+# Ошибка в цене звезды множит на себя каждую цену в GRAM: floor модели
+# с Portals прилетает в расчёт раздутым, ROI рисуется сотнями
+# процентов, и по числам это неотличимо от настоящей находки.
+
+
+class _Option:
+    """Пакет пополнения в том виде, в каком его отдаёт Telegram."""
+
+    def __init__(self, stars, amount, currency="USD"):
+        self.stars = stars
+        self.amount = amount
+        self.currency = currency
+
+
+async def _price(monkeypatch, options):
+    """Цена звезды по этим пакетам."""
+    from app.services import fx
+
+    class _Gateway:
+        async def call(self, _request):
+            return options
+
+    class _Adapter:
+        gateway = _Gateway()
+
+    monkeypatch.setattr(
+        "app.adapters.registry.get_adapter", lambda _market: _Adapter()
+    )
+    return await fx.fetch_stars_price_usd()
+
+
+@pytest.mark.asyncio
+async def test_cheapest_plausible_package_wins(monkeypatch):
+    """Из нормальных пакетов берётся самый выгодный."""
+    price = await _price(monkeypatch, [
+        _Option(100, 199),      # 1.99 $ -> 0.0199 за звезду
+        _Option(1000, 1500),    # 15 $   -> 0.015
+    ])
+
+    assert price == Decimal("0.015")
+
+
+@pytest.mark.asyncio
+async def test_absurdly_cheap_package_ignored(monkeypatch):
+    """Пакет с неправдоподобной ценой не утягивает за собой курс.
+
+    Берётся минимум, поэтому одна запись со странным номиналом
+    задавала бы курс в одиночку — и завышала бы оценку всего, что
+    номинировано в GRAM, во столько же раз.
+    """
+    price = await _price(monkeypatch, [
+        _Option(1000, 340),     # 0.0034 за звезду — так Telegram не продаёт
+        _Option(1000, 1500),
+    ])
+
+    assert price == Decimal("0.015")
+
+
+@pytest.mark.asyncio
+async def test_no_plausible_package_is_an_error(monkeypatch):
+    """Если правдоподобных пакетов нет — это ошибка, а не курс.
+
+    Записать сомнительный курс молча хуже, чем остаться со старым:
+    старый хотя бы был верен когда-то.
+    """
+    from app.services import fx
+
+    with pytest.raises(ValueError):
+        await _price(monkeypatch, [_Option(1000, 1)])
+
+    assert fx.STAR_USD_MIN < Decimal("0.015") < fx.STAR_USD_MAX
+
+
+def test_manual_price_out_of_range_ignored(monkeypatch):
+    """Опечатка в ручной цене звезды не уходит в расчёты."""
+    from app.services import fx, store
+
+    values: dict[str, str] = {}
+    monkeypatch.setattr(store, "get", lambda key: values.get(key))
+
+    values[fx.MANUAL_STAR_USD_KEY] = "0.0001"
+    assert fx.manual_star_usd() is None
+
+    values[fx.MANUAL_STAR_USD_KEY] = "0.015"
+    assert fx.manual_star_usd() == Decimal("0.015")
+
+
+def test_warning_names_the_direction_of_the_error():
+    """Предупреждение говорит, в какую сторону поехали оценки."""
+    from app.services import fx
+
+    assert fx.rate_warning(Decimal("0.015")) is None
+    assert "завышен" in fx.rate_warning(Decimal("0.0003"))
+    assert "занижен" in fx.rate_warning(Decimal("0.9"))
+    assert fx.rate_warning(None) is None
+
+
+def test_stale_rate_is_flagged(session):
+    """Давний курс помечается: он не перезаписывается сам собой.
+
+    Обновление молча пропускается, когда источник недоступен, поэтому
+    значение месячной давности продолжает лежать в таблице и выглядеть
+    рабочим — а по нему считается каждая сделка.
+    """
+    import datetime as dt
+
+    from app.models import FxSnapshot
+
+    session.add(
+        FxSnapshot(
+            base=Currency.TON, quote=Currency.STARS, rate=Decimal("400"),
+            source="default", taken_at=utcnow() - dt.timedelta(days=40),
+        )
+    )
+    session.flush()
+
+    data = fx.snapshot(session)
+    row = next(r for r in data["pairs"] if r["title"] == "GRAM → Stars")
+
+    assert row["stale"] is True
+    assert row["age_days"] >= 40
+    assert "не обновлялся" in data["warning"]
+
+
+def test_fresh_rate_is_not_flagged(session):
+    """Свежий курс ничем не помечается."""
+    from app.models import FxSnapshot
+
+    session.add(
+        FxSnapshot(
+            base=Currency.TON, quote=Currency.STARS, rate=Decimal("110"),
+            source="tonapi", taken_at=utcnow(),
+        )
+    )
+    session.flush()
+
+    data = fx.snapshot(session)
+    row = next(r for r in data["pairs"] if r["title"] == "GRAM → Stars")
+
+    assert row["stale"] is False
+    assert data["warning"] is None

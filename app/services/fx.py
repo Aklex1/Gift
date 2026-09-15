@@ -21,6 +21,7 @@ Stars обходятся дороже, а не дешевле.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 from decimal import Decimal
 
@@ -47,6 +48,20 @@ LAST_FX_KEY = "LAST_FX_REPORT"
 #: Ручная цена звезды в долларах — запасной вариант, когда сессия
 #: Telegram недоступна и официальные пакеты не прочитать.
 MANUAL_STAR_USD_KEY = "FX_STAR_USD"
+
+#: Разумные границы цены звезды в долларах. Telegram продаёт их
+#: примерно по цента-два; половина цента и пять центов — заведомо не
+#: цена, а ошибка разбора. Курс Stars/TON выводится делением, поэтому
+#: заниженная в разы цена звезды во столько же раз завышает оценку
+#: всего, что номинировано в TON: floor модели с Portals прилетает в
+#: расчёт кратно раздутым, и ROI рисуется сотнями процентов.
+STAR_USD_MIN = Decimal("0.005")
+STAR_USD_MAX = Decimal("0.05")
+
+#: После какого возраста курс перестаёт быть курсом. Снапшот не
+#: перезаписывается, если источник недоступен, поэтому в таблице
+#: может месяцами лежать давнее значение — и выглядеть рабочим.
+STALE_AFTER = dt.timedelta(days=7)
 
 
 async def fetch_ton_rates() -> dict[str, Decimal]:
@@ -93,6 +108,7 @@ async def fetch_stars_price_usd() -> Decimal:
     )
 
     best: Decimal | None = None
+    rejected: list[str] = []
     for option in result or []:
         stars = getattr(option, "stars", 0)
         amount = getattr(option, "amount", 0)
@@ -101,16 +117,35 @@ async def fetch_stars_price_usd() -> Decimal:
             continue
         # amount приходит в сотых долях валюты.
         per_star = Decimal(amount) / Decimal(100) / Decimal(stars)
+        if not (STAR_USD_MIN <= per_star <= STAR_USD_MAX):
+            # Берём самый выгодный пакет, то есть минимум. Значит одна
+            # запись со странным номиналом утягивает за собой весь
+            # курс — а курс Stars/TON множит на себя каждую цену в TON.
+            rejected.append(f"{stars} звёзд за {amount} ({per_star} $/звезда)")
+            continue
         if best is None or per_star < best:
             best = per_star
 
+    if rejected:
+        log.warning(
+            "Пакеты Stars с неправдоподобной ценой пропущены: %s",
+            "; ".join(rejected[:5]),
+        )
     if best is None or best <= 0:
-        raise ValueError("Telegram не вернул пакетов Stars в долларах")
+        raise ValueError(
+            "Telegram не вернул пакетов Stars в долларах по правдоподобной цене"
+            + (f" (отброшено: {len(rejected)})" if rejected else "")
+        )
     return best
 
 
 def manual_star_usd() -> Decimal | None:
-    """Заданная вручную цена звезды в долларах."""
+    """Заданная вручную цена звезды в долларах.
+
+    Значение вне разумных границ игнорируется: опечатка в один разряд
+    здесь во столько же раз искажает оценку всего, что номинировано в
+    GRAM, — а выглядит это не ошибкой, а удачной находкой.
+    """
     raw = store.get(MANUAL_STAR_USD_KEY)
     if not raw:
         return None
@@ -118,7 +153,36 @@ def manual_star_usd() -> Decimal | None:
         value = Decimal(raw)
     except Exception:  # noqa: BLE001
         return None
+    if not (STAR_USD_MIN <= value <= STAR_USD_MAX):
+        log.warning(
+            "Ручная цена звезды %s вне разумных границ (%s…%s) — не используется",
+            value, STAR_USD_MIN, STAR_USD_MAX,
+        )
+        return None
     return value if value > 0 else None
+
+
+def rate_warning(star_usd: Decimal | None) -> str | None:
+    """Предупреждение, если цена звезды выглядит неправдоподобно.
+
+    Курс Stars/TON выводится делением курса TON на цену звезды.
+    Ошибка в цене звезды множит на себя каждую цену в GRAM: floor
+    модели с Portals прилетает в расчёт раздутым, ROI рисуется
+    сотнями процентов, и по числам это не отличить от находки.
+    """
+    if star_usd is None or star_usd <= 0:
+        return None
+    if star_usd < STAR_USD_MIN:
+        return (
+            f"цена звезды {star_usd} $ подозрительно низкая — курс GRAM → Stars "
+            f"завышен, и оценки лотов с Portals и MRKT раздуты"
+        )
+    if star_usd > STAR_USD_MAX:
+        return (
+            f"цена звезды {star_usd} $ подозрительно высокая — курс GRAM → Stars "
+            f"занижен, и лоты с Portals и MRKT выглядят дороже, чем есть"
+        )
+    return None
 
 
 def set_manual_star_usd(value: Decimal | None, *, actor: str = "web") -> None:
@@ -257,15 +321,38 @@ def snapshot(session) -> dict:
             .order_by(FxSnapshot.taken_at.desc())
             .first()
         )
+        age = (utcnow() - row.taken_at) if row else None
         out.append(
             {
                 "title": title,
                 "rate": Decimal(row.rate) if row else None,
                 "source": row.source if row else None,
                 "at": row.taken_at if row else None,
+                # Давний курс — не курс. Обновление молча пропускается,
+                # когда источник недоступен, так что устаревшее
+                # значение остаётся в таблице и выглядит рабочим.
+                "stale": bool(age and age > STALE_AFTER),
+                "age_days": age.days if age else None,
                 # Значение по умолчанию — признак того, что источник
                 # недоступен и расчёты приблизительны.
                 "is_default": bool(row and row.source == "default"),
             }
         )
-    return {"pairs": out, "spread": spread(), "report": last_report()}
+    star = next(
+        (row["rate"] for row in out if row["title"] == "Stars → USD"), None
+    )
+    warning = rate_warning(star)
+    if warning is None:
+        stale = [row["title"] for row in out if row["stale"] and row["rate"]]
+        if stale:
+            warning = (
+                f"курс не обновлялся больше {STALE_AFTER.days} дней: "
+                f"{', '.join(stale)}. Пока он лежит старый, все расчёты "
+                f"идут по нему — в том числе оценка лотов с Portals и MRKT"
+            )
+    return {
+        "pairs": out,
+        "spread": spread(),
+        "report": last_report(),
+        "warning": warning,
+    }

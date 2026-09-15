@@ -250,10 +250,22 @@
       <td>{% if r.rate is not none %}<b>{{ '%.4f'|format(r.rate|float) }}</b>
           {% else %}<span class="neg">нет данных</span>{% endif %}</td>
       <td class="muted">{{ r.source or '—' }}</td>
-      <td class="muted">{{ r.at.strftime('%d.%m %H:%M') if r.at else '—' }}</td>
+      <td class="{{ 'warn-text' if r.stale else 'muted' }}">
+        {{ r.at.strftime('%d.%m %H:%M') if r.at else '—' }}
+        {% if r.stale %}({{ r.age_days }} дн. назад){% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
+
+  {% if fx.warning %}
+  <div class="scan-note warn-text" style="margin-top:8px">
+    ⚠️ {{ fx.warning }}.
+    Курс GRAM → Stars выводится делением курса GRAM на цену звезды, поэтому
+    ошибка в ней во столько же раз искажает оценку каждого лота,
+    номинированного в GRAM. Проверьте цену звезды ниже.
+  </div>
+  {% endif %}
 
   <div class="market" style="margin-top:12px">
     <label class="cap">

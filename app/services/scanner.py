@@ -322,6 +322,24 @@ def _value_info_in_stars(session: Session, info: dict) -> dict | None:
     return out
 
 
+def venue_floor(sources: list[MarketSnapshot], market: Market) -> Decimal | None:
+    """Минимальная цена таких лотов на этой самой площадке.
+
+    Потолок для цены продажи. Когда справедливую цену дала чужая
+    площадка, без него расчёт обещает продажу по цене, которой на
+    нашей площадке нет: там тот же подарок может стоить в разы
+    дешевле, и ROI получается кратным на пустом месте.
+    """
+    wanted = SOURCE_MARKETS
+    for snapshot in sources:
+        if wanted.get(snapshot.source) is not market:
+            continue
+        floor = snapshot.floor_price or snapshot.median_price
+        if floor and floor > 0:
+            return floor
+    return None
+
+
 def live_prices(sources: list[MarketSnapshot]) -> dict[Market, Decimal]:
     """Цены в Stars, которые площадки назвали при сборе источников.
 
@@ -469,9 +487,14 @@ def choose_primary(
     Поэтому берётся один, самый надёжный для цены, а остальные идут в
     сводку аудита.
 
-    Порядок: floor модели точнее всего для редких моделей, официальная
-    оценка Telegram — для подарков Telegram, затем состоявшиеся сделки
-    на Fragment, и последней — собственная выборка.
+    Порядок: сперва источник той площадки, где лот и куплен, потом
+    чужие. Цена — свойство площадки, а не подарка: floor модели на
+    Portals точен для Portals и ничего не говорит о том, за сколько
+    этот подарок уйдёт в Telegram.
+
+    Дальше — floor модели на Portals (он точнее всего описывает
+    редкую модель), официальная оценка Telegram, состоявшиеся сделки
+    на Fragment и собственная выборка.
 
     Сделки Fragment стоят ниже площадочных оценок намеренно. Они
     честнее по природе — это цена, по которой заплатили, а не по
@@ -487,11 +510,17 @@ def choose_primary(
         return None
 
     priority = {
-        "portals_attribute_floor": 0,
-        "telegram_value_info": 1 if market is Market.TELEGRAM else 2,
-        f"market:{Market.FRAGMENT.value}": 3,
+        # Своя площадка всегда первая. Floor модели на Portals точнее
+        # всего для редкой модели — но это цена **на Portals**, и для
+        # лота в Telegram она не справедливая оценка, а чужая. Раньше
+        # она стояла первой безусловно, и телеграмный лот оценивался
+        # по портальской цене: ROI выходил кратным, а продать по такой
+        # цене в Telegram было нельзя.
+        "portals_attribute_floor": 0 if market is Market.PORTALS else 2,
+        "telegram_value_info": 0 if market is Market.TELEGRAM else 3,
+        f"market:{Market.FRAGMENT.value}": 4,
     }
-    return min(sources, key=lambda s: priority.get(s.source, 4))
+    return min(sources, key=lambda s: priority.get(s.source, 5))
 
 
 async def snapshot_for_listing(
@@ -803,6 +832,7 @@ async def evaluate_listing(
         snapshot = marketdata.with_observed_velocity(session, snapshot)
         audit = audit_view(sources)
         known = live_prices(sources)
+        own_floor = venue_floor(sources, dto.market)
         # Разброс цен сделок: бывают ли в этом виде подарков дешёвые
         # входы вообще. На отбор не влияет — это мера угодий, а не
         # конкретного лота, — но объясняет, почему лот дешёвый.
@@ -849,6 +879,7 @@ async def evaluate_listing(
                 snapshot=snapshot,
                 is_official_api=is_official,
                 target_markup=Decimal(strategy.sell_markup or 0),
+                venue_floor=own_floor,
             )
 
             if result.blockers:
