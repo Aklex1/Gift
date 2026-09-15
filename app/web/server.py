@@ -337,16 +337,7 @@ def _render_settings(
 
     from app.services import webauth
 
-    tokens = []
-    for market in webauth.MINIAPPS:
-        age = webauth.age_seconds(market)
-        tokens.append(
-            {
-                "market": market.value,
-                "age_min": None if age is None else age // 60,
-                "stale": age is None or age > webauth.MAX_AGE_SEC,
-            }
-        )
+    tokens = [webauth.token_state(market) for market in webauth.MINIAPPS]
 
     return templates.TemplateResponse(
         request=request,

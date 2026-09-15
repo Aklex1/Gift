@@ -97,6 +97,7 @@ async def fetch_init_data(market: Market, *, account_id: int | None = None) -> s
         ValueError: площадка не поддерживает такой способ или
             Telegram не вернул данные.
     """
+    from telethon import utils as tl_utils
     from telethon.tl.functions.messages import (
         RequestAppWebViewRequest,
         RequestWebViewRequest,
@@ -120,7 +121,20 @@ async def fetch_init_data(market: Market, *, account_id: int | None = None) -> s
             tg = telegram_gateway.gateway_for(account)
 
     client = await tg.client()
-    entity = await client.get_entity(bot)
+
+    # Поля верхнего уровня Telethon приводит к Input*-виду сам, а
+    # вложенные — нет. bot_id лежит внутри InputBotAppShortName, и
+    # объект User там уходил на сервер как есть: отсюда и приходило
+    # BOT_APP_BOT_INVALID. Строим InputUser явно.
+    input_peer = await client.get_input_entity(bot)
+    try:
+        input_user = tl_utils.get_input_user(input_peer)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{market.value}: @{bot} — не бот, а {type(input_peer).__name__}. "
+            f"Проверьте {MINIAPP_KEY[market]}: там должно быть имя бота "
+            f"мини-приложения."
+        ) from exc
 
     # Два способа открыть приложение. Первый точнее, но требует знать
     # короткое имя; второй открывает приложение из кнопки меню бота и
@@ -129,8 +143,10 @@ async def fetch_init_data(market: Market, *, account_id: int | None = None) -> s
         (
             f"@{bot}/{short_name}",
             RequestAppWebViewRequest(
-                peer=entity,
-                app=InputBotAppShortName(bot_id=entity, short_name=short_name),
+                peer=input_peer,
+                app=InputBotAppShortName(
+                    bot_id=input_user, short_name=short_name
+                ),
                 platform="android",
                 write_allowed=True,
             ),
@@ -138,8 +154,8 @@ async def fetch_init_data(market: Market, *, account_id: int | None = None) -> s
         (
             f"кнопка меню @{bot}",
             RequestWebViewRequest(
-                peer=entity,
-                bot=entity,
+                peer=input_peer,
+                bot=input_user,
                 platform="android",
                 from_bot_menu=True,
             ),
@@ -236,6 +252,50 @@ def age_seconds(market: Market) -> int | None:
     if not issued:
         return None
     return max(0, int(time.time()) - issued)
+
+
+def token_state(market: Market) -> dict:
+    """Что на самом деле лежит в настройке токена.
+
+    Различает «токена нет» и «токен есть, но без метки времени» —
+    раньше оба случая показывались одной фразой, и человек, вставивший
+    рабочий токен руками, читал, что токена нет.
+    """
+    from app.crypto import redact
+    from app.services import secrets
+
+    stored = (secrets.resolve(INIT_DATA_KEY[market], "") or "").strip()
+    if not stored:
+        return {
+            "market": market.value,
+            "present": False,
+            "age_min": None,
+            "stale": True,
+            "note": "не задан",
+            "masked": "—",
+        }
+
+    age = age_seconds(market)
+    if age is None:
+        return {
+            "market": market.value,
+            "present": True,
+            "age_min": None,
+            # Срок неизвестен — обновляем по расписанию, но это не
+            # значит, что токен нерабочий.
+            "stale": True,
+            "note": "задан вручную, срок неизвестен",
+            "masked": redact(stored),
+        }
+
+    return {
+        "market": market.value,
+        "present": True,
+        "age_min": age // 60,
+        "stale": age > MAX_AGE_SEC,
+        "note": f"обновлён {age // 60} мин. назад",
+        "masked": redact(stored),
+    }
 
 
 async def ensure_fresh(

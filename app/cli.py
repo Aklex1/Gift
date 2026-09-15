@@ -20,6 +20,7 @@
     rotate-key  — сменить ключ шифрования секретов, перешифровав базу
     verify-key  — проверить, что секреты читаются текущим ключом
     renew-tokens— продлить токены площадок через мини-приложения
+    tokens      — показать состояние токенов площадок
     feed        — прочитать канал находок и показать коллекции
 """
 
@@ -725,6 +726,27 @@ def cmd_doctor() -> int:
     return 1
 
 
+async def _tokens() -> int:
+    """Показать, что лежит в токенах площадок, ничего не меняя."""
+    from app.services import webauth
+
+    print("Токены площадок\n")
+    for market in webauth.MINIAPPS:
+        state = webauth.token_state(market)
+        bot, short_name = webauth._miniapp(market)
+        print(f"  {state['market']}")
+        print(f"    значение    : {state['masked']}")
+        print(f"    состояние   : {state['note']}")
+        print(f"    мини-приложение: @{bot}/{short_name}")
+        if state["present"] and state["age_min"] is None:
+            print("    Токен задан вручную и продолжает работать до своего")
+            print("    истечения, даже если автопродление не удаётся.")
+        print()
+
+    print("Продлить: gift-cli renew-tokens")
+    return 0
+
+
 async def _renew_tokens() -> int:
     """Продлить токены площадок прямо сейчас."""
     from app.services import webauth
@@ -913,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
             "rotate-key",
             "verify-key",
             "renew-tokens",
+            "tokens",
             "feed",
         ],
     )
@@ -972,6 +995,7 @@ def main(argv: list[str] | None = None) -> int:
         "scan": _scan,
         "inventory": _inventory,
         "renew-tokens": _renew_tokens,
+        "tokens": _tokens,
         "feed": _feed,
     }
     return asyncio.run(async_commands[args.command]())

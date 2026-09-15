@@ -217,22 +217,30 @@ def test_partial_override_keeps_default_short_name():
 class _FakeGateway:
     """Шлюз, который отвечает по сценарию на каждый вызов."""
 
-    def __init__(self, outcomes):
+    def __init__(self, outcomes, *, peer=None):
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.requests = []
+        # Настоящий бот разрешается в InputPeerUser; подменять его
+        # заглушкой нельзя — именно на приведении к InputUser и ломалось.
+        from telethon.tl.types import InputPeerUser
+
+        self.peer = peer or InputPeerUser(user_id=777, access_hash=123)
 
     async def client(self):
-        """Клиент, умеющий только находить бота."""
+        """Клиент, умеющий разрешать имя бота."""
+        peer = self.peer
 
         class _Client:
-            async def get_entity(self, _name):
-                return object()
+            async def get_input_entity(self, _name):
+                return peer
 
         return _Client()
 
-    async def call(self, _request):
+    async def call(self, request):
         """Отдать следующий запланированный исход."""
         self.calls += 1
+        self.requests.append(request)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -247,8 +255,8 @@ class _FakeGateway:
 def fake_tg(monkeypatch):
     """Подменить шлюз Telegram заданным сценарием."""
 
-    def install(outcomes):
-        gateway = _FakeGateway(outcomes)
+    def install(outcomes, *, peer=None):
+        gateway = _FakeGateway(outcomes, peer=peer)
         from app.adapters import telegram_gateway
 
         monkeypatch.setattr(telegram_gateway, "default_gateway", lambda: gateway)
@@ -424,3 +432,111 @@ async def test_portals_failed_renewal_raises_original(monkeypatch):
 
     with pytest.raises(AuthRequired):
         await adapter.request("GET", "/nfts/search")
+
+
+# --- приведение типов, на котором всё ломалось -----------------------
+
+
+@pytest.mark.asyncio
+async def test_nested_bot_id_is_input_user(fake_tg):
+    """bot_id внутри InputBotAppShortName должен быть InputUser.
+
+    Telethon приводит к Input*-виду только поля верхнего уровня.
+    Вложенный bot_id уходил на сервер объектом User, и Telegram
+    отвечал BOT_APP_BOT_INVALID.
+    """
+    from telethon.tl.types import InputUser
+
+    gateway = fake_tg(["https://portals.tg/#tgWebAppData=query_id%3DAAA"])
+    await webauth.fetch_init_data(Market.PORTALS)
+
+    request = gateway.requests[0]
+    assert isinstance(request.app.bot_id, InputUser)
+    assert request.app.bot_id.user_id == 777
+    assert request.app.short_name == "market"
+
+
+@pytest.mark.asyncio
+async def test_menu_button_bot_is_input_user(fake_tg):
+    """У запасного способа поле bot тоже должно быть InputUser."""
+    from telethon.tl.types import InputUser
+
+    gateway = fake_tg(
+        [RuntimeError("BOT_APP_BOT_INVALID"), "https://x/#tgWebAppData=q%3D1"]
+    )
+    await webauth.fetch_init_data(Market.PORTALS)
+
+    assert isinstance(gateway.requests[1].bot, InputUser)
+
+
+@pytest.mark.asyncio
+async def test_non_bot_username_explained(fake_tg):
+    """Канал вместо бота — понятная ошибка, а не BOT_APP_BOT_INVALID.
+
+    Ровно с этим сталкивается человек, указавший в настройке имя
+    канала: Telegram отвечает загадочно, и без пояснения непонятно,
+    что именно исправлять.
+    """
+    from telethon.tl.types import InputPeerChannel
+
+    fake_tg([], peer=InputPeerChannel(channel_id=42, access_hash=1))
+
+    with pytest.raises(ValueError) as exc:
+        await webauth.fetch_init_data(Market.PORTALS)
+
+    text = str(exc.value)
+    assert "не бот" in text
+    assert "PORTALS_MINIAPP" in text
+
+
+# --- честный разбор состояния токена ---------------------------------
+
+
+def test_absent_token_reported_as_absent():
+    """Когда токена нет, так и сказано."""
+    state = webauth.token_state(Market.PORTALS)
+
+    assert state["present"] is False
+    assert state["note"] == "не задан"
+    assert state["masked"] == "—"
+
+
+def test_manual_token_is_not_called_missing():
+    """Токен, вставленный руками, не должен показываться как отсутствующий.
+
+    В нём нет auth_date, но это не повод утверждать, что его нет:
+    человек видел такое сообщение сразу после того, как вставил
+    рабочий токен из DevTools.
+    """
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_AUTH", "tma query_id=AAH&user=%7B%7D&hash=abcdef")
+    state = webauth.token_state(Market.PORTALS)
+
+    assert state["present"] is True
+    assert state["age_min"] is None
+    assert "вручную" in state["note"]
+    # Значение показывается замаскированным, а не целиком.
+    assert "query_id" not in state["masked"]
+    assert state["masked"] != "—"
+
+
+def test_dated_token_reports_age():
+    """У токена с меткой времени показывается возраст."""
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_AUTH", f"tma {_init_data(1800)}")
+    state = webauth.token_state(Market.PORTALS)
+
+    assert state["present"] is True
+    assert 29 <= state["age_min"] <= 31
+    assert state["stale"] is False
+
+
+def test_old_token_flagged_stale():
+    """Старый токен помечается как требующий продления."""
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_AUTH", f"tma {_init_data(9 * 3600)}")
+
+    assert webauth.token_state(Market.PORTALS)["stale"] is True

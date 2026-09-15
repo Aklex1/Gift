@@ -40,13 +40,19 @@
   <tr>
     <td class="skey">{{ token.market }}</td>
     <td>
-      {% if token.age_min is none %}
-        <span class="muted">токена нет или в нём не указано время выдачи</span>
+      {% if not token.present %}
+        <span class="muted">не задан</span>
+        <b class="danger">— площадка недоступна</b>
+      {% elif token.age_min is none %}
+        <code>{{ token.masked }}</code>
+        <span class="muted">— задан вручную, срок неизвестен</span>
+        <br><span class="muted">Бот попробует продлить его по расписанию.
+          Пока продление не удаётся, этот токен продолжает работать до
+          своего истечения.</span>
       {% else %}
-        обновлён {{ token.age_min }} мин. назад
-      {% endif %}
-      {% if token.stale %}
-        <b class="danger">— требует продления</b>
+        <code>{{ token.masked }}</code>
+        — обновлён {{ token.age_min }} мин. назад
+        {% if token.stale %}<b class="danger">— требует продления</b>{% endif %}
       {% endif %}
     </td>
   </tr>
