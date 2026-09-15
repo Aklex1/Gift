@@ -72,6 +72,7 @@ REJECTION_LABELS = {
     "roi": "прибыль ниже порога стратегии",
     "risk": "риск выше допустимого",
     "disagreement": "источники разошлись в цене — оценке нельзя верить",
+    "no_fx": "нет свежего курса GRAM → Stars, цену не пересчитать",
 }
 
 #: Во сколько раз источники могут разойтись, прежде чем оценка
@@ -909,6 +910,11 @@ async def evaluate_listing(
     with session_scope() as session:
         price_stars = marketdata.to_stars(session, dto.price, dto.currency)
         if price_stars is None or price_stars <= 0:
+            # Чаще всего это устаревший курс. Молчаливый пропуск
+            # выглядел бы как «лотов нет», и человек искал бы поломку
+            # в площадках вместо настроек.
+            if dto.currency is not Currency.STARS:
+                rejections["no_fx"] += 1
             return (0, rejections)
 
         sources = await gather_sources(session, dto)

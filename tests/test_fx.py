@@ -69,11 +69,15 @@ def test_spread_is_bounded(session):
     assert fx.spread() == fx.DEFAULT_SPREAD
 
 
-def test_real_snapshot_beats_default(session):
-    """Записанный курс важнее значения по умолчанию."""
-    assert marketdata.to_stars(
-        session, Decimal("4"), Currency.TON
-    ) == Decimal("4") * marketdata.DEFAULT_STARS_PER_TON
+def test_without_a_rate_there_is_no_conversion(session):
+    """Без курса цена в GRAM не пересчитывается вовсе.
+
+    Раньше подставлялась грубая оценка. Но курс — множитель для каждой
+    цены в GRAM: пока он неверен, сделки выглядят тем выгоднее, чем
+    сильнее он врёт. Не показать ничего честнее, чем показать ROI в
+    сорок тысяч процентов.
+    """
+    assert marketdata.to_stars(session, Decimal("4"), Currency.TON) is None
 
     marketdata.record_fx(
         session, Currency.TON, Currency.STARS, Decimal("65.5"), source="tonapi"
@@ -81,13 +85,52 @@ def test_real_snapshot_beats_default(session):
     assert marketdata.to_stars(session, Decimal("4"), Currency.TON) == Decimal("262.0")
 
 
-def test_default_is_not_wildly_off(session):
-    """Значение по умолчанию должно быть правдоподобным.
+def test_stale_rate_is_not_a_rate(session):
+    """Курс месячной давности к пересчёту не допускается.
 
-    При курсе TON около 1.3 USD и цене звезды около 0.02 USD выходит
-    примерно 65 звёзд за TON. Прежние 400 отличались в шесть раз.
+    Снапшот не перезаписывается, когда источник недоступен, поэтому
+    давнее значение продолжает лежать в базе и выглядеть рабочим. Так
+    на сервере месяцами жил курс 400 звёзд за GRAM.
     """
-    assert Decimal("40") <= marketdata.DEFAULT_STARS_PER_TON <= Decimal("120")
+    import datetime as dt
+
+    from app.models import FxSnapshot, utcnow
+
+    session.add(
+        FxSnapshot(
+            base=Currency.TON, quote=Currency.STARS, rate=Decimal("400"),
+            source="default", taken_at=utcnow() - dt.timedelta(days=40),
+        )
+    )
+    session.flush()
+
+    assert marketdata.to_stars(session, Decimal("4"), Currency.TON) is None
+
+
+def test_fresh_rate_is_used(session):
+    """Свежий курс работает как прежде."""
+    marketdata.record_fx(
+        session, Currency.TON, Currency.STARS, Decimal("100"), source="tonapi"
+    )
+
+    assert marketdata.to_stars(session, Decimal("4"), Currency.TON) == Decimal("400")
+
+
+def test_stale_inverse_rate_is_refused_too(session):
+    """Обратный курс проверяется на свежесть наравне с прямым."""
+    import datetime as dt
+
+    from app.models import FxSnapshot, utcnow
+
+    session.add(
+        FxSnapshot(
+            base=Currency.STARS, quote=Currency.TON, rate=Decimal("0.01"),
+            source="test", taken_at=utcnow() - dt.timedelta(days=40),
+        )
+    )
+    session.flush()
+
+    assert marketdata.to_stars(session, Decimal("4"), Currency.TON) is None
 
 
 def test_manual_star_price_can_be_cleared(session):

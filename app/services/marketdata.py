@@ -26,30 +26,50 @@ log = logging.getLogger(__name__)
 FRESH_WINDOW = dt.timedelta(days=14)
 #: Порог отсечения выбросов в медианных абсолютных отклонениях.
 MAD_THRESHOLD = Decimal("3.5")
-#: Курс Stars за TON на случай, когда снапшота ещё нет.
+#: Насколько старым может быть курс, чтобы по нему ещё считать.
 #:
-#: Это грубая оценка, а не факт. Прежнее значение 400 было завышено
-#: примерно в шесть раз и искажало все кросс-валютные расчёты: цена
-#: лота в TON выглядела кратно дороже, чем есть. Настоящий курс
-#: считает app.services.fx из курса TON и официальной цены Stars;
-#: значение ниже используется только до первого успешного обновления.
-DEFAULT_STARS_PER_TON = Decimal("65")
+#: Снапшот не перезаписывается, когда источник недоступен, поэтому
+#: давнее значение продолжает лежать в базе и выглядеть рабочим. Так
+#: на сервере месяцами жил курс 400 звёзд за GRAM — вчетверо выше
+#: настоящего, — и каждая цена в GRAM приходила в расчёт раздутой.
+FX_MAX_AGE = dt.timedelta(days=7)
 
 
 # ----------------------------------------------------------------------
 # Курсы
 # ----------------------------------------------------------------------
-def latest_fx(session: Session, base: Currency, quote: Currency) -> Decimal | None:
-    """Последний известный курс base->quote."""
+def latest_fx(
+    session: Session,
+    base: Currency,
+    quote: Currency,
+    *,
+    max_age: dt.timedelta | None = None,
+) -> Decimal | None:
+    """Последний известный курс base->quote.
+
+    Args:
+        max_age: не старше этого возраста. Снапшот не перезаписывается,
+            когда источник недоступен, поэтому значение месячной
+            давности продолжает лежать в базе и выглядеть рабочим — а
+            по нему пересчитывается каждая цена.
+    """
     if base == quote:
         return Decimal(1)
+
+    def fresh(row) -> bool:
+        if row is None:
+            return False
+        if max_age is None:
+            return True
+        return (utcnow() - row.taken_at) <= max_age
+
     row = session.execute(
         select(FxSnapshot)
         .where(FxSnapshot.base == base, FxSnapshot.quote == quote)
         .order_by(FxSnapshot.taken_at.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if row is not None:
+    if fresh(row):
         return Decimal(row.rate)
 
     # Пробуем обратный курс.
@@ -59,7 +79,7 @@ def latest_fx(session: Session, base: Currency, quote: Currency) -> Decimal | No
         .order_by(FxSnapshot.taken_at.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if inverse is not None and Decimal(inverse.rate) > 0:
+    if fresh(inverse) and Decimal(inverse.rate) > 0:
         return Decimal(1) / Decimal(inverse.rate)
     return None
 
@@ -91,24 +111,29 @@ def _warn_missing_fx() -> None:
         return
     _fx_warned = True
     log.warning(
-        "Нет FX-снапшота TON->STARS, беру грубую оценку %s. "
-        "Расчёты приблизительны до обновления курса "
-        "(обновить: gift-cli doctor или дождаться воркера).",
-        DEFAULT_STARS_PER_TON,
+        "Нет свежего курса GRAM->Stars (не старше %s дней). Цены в GRAM "
+        "не пересчитываются, лоты этих площадок пропускаются. "
+        "Обновите курс: панель -> «Торговля» -> «Сохранить и обновить "
+        "курс», либо задайте цену звезды вручную.",
+        FX_MAX_AGE.days,
     )
 
 
 def to_stars(session: Session, amount: Decimal, currency: Currency) -> Decimal | None:
-    """Привести сумму к Stars по последнему снапшоту курса."""
+    """Привести сумму к Stars по свежему снапшоту курса.
+
+    Устаревший курс не используется, и подставлять вместо него грубую
+    оценку тоже нельзя. Курс — множитель для каждой цены в GRAM: пока
+    он неверен, сделки не просто считаются неточно, они выглядят тем
+    выгоднее, чем сильнее он врёт. Лучше не показать ничего, чем
+    показать ROI в сорок тысяч процентов.
+    """
     if currency is Currency.STARS:
         return amount
-    rate = latest_fx(session, currency, Currency.STARS)
+    rate = latest_fx(session, currency, Currency.STARS, max_age=FX_MAX_AGE)
     if rate is None:
-        if currency is Currency.TON:
-            _warn_missing_fx()
-            rate = DEFAULT_STARS_PER_TON
-        else:
-            return None
+        _warn_missing_fx()
+        return None
     return amount * rate
 
 

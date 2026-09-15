@@ -500,9 +500,12 @@ def _convert(
     stars = marketdata.to_stars(session, amount, source)
     if stars is None:
         return None
-    rate = marketdata.latest_fx(session, target, Currency.STARS)
-    if rate is None and target is Currency.TON:
-        rate = marketdata.DEFAULT_STARS_PER_TON
+    # Свежесть курса здесь важна не меньше, чем при оценке: это
+    # перевод суммы реальной сделки, и подставленная догадка ушла бы в
+    # деньги, а не в отчёт.
+    rate = marketdata.latest_fx(
+        session, target, Currency.STARS, max_age=marketdata.FX_MAX_AGE
+    )
     if not rate or rate <= 0:
         return None
     return stars / rate

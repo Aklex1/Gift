@@ -1354,9 +1354,25 @@ async def _value(slug: str | None) -> int:
         print(f"  {field:<20} {info.get(field)}")
     print(f"  listed_count         {info.get('listed_count')}")
 
+    from app.models import FxSnapshot, utcnow
+
     with session_scope() as session:
-        rate = marketdata.latest_fx(session, Currency.TON, Currency.STARS)
-    print(f"\nКурс GRAM → Stars сейчас: {rate if rate else 'нет снапшота'}")
+        row = (
+            session.query(FxSnapshot)
+            .filter_by(base=Currency.TON, quote=Currency.STARS)
+            .order_by(FxSnapshot.taken_at.desc())
+            .first()
+        )
+        rate = Decimal(row.rate) if row else None
+        age = (utcnow() - row.taken_at).days if row else None
+        source = row.source if row else None
+
+    print(f"\nКурс GRAM → Stars: {rate if rate else 'снапшота нет'}")
+    if row is not None:
+        note = f"  источник {source}, записан {age} дн. назад"
+        if age is not None and age > marketdata.FX_MAX_AGE.days:
+            note += "  ← устарел, по нему уже не считаем"
+        print(note)
 
     collection = slug.rsplit("-", 1)[0]
     frag = FragmentAdapter()

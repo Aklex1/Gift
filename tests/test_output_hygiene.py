@@ -31,16 +31,32 @@ def test_missing_fx_warns_once(session, caplog):
         for _ in range(5):
             marketdata.to_stars(session, Decimal("1"), Currency.TON)
 
-    warnings = [r for r in caplog.records if "FX-снапшот" in r.message]
+    warnings = [r for r in caplog.records if "курса" in r.message]
     assert len(warnings) == 1
 
 
-def test_conversion_still_works_after_warning(session):
-    """Пересчёт продолжает работать, а не глохнет вместе с сообщением."""
+def test_warning_says_what_to_do(session, caplog):
+    """Сообщение называет и последствие, и способ починки.
+
+    «Нет курса» без продолжения оставляет человека гадать, почему
+    пропал весь список кандидатов.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.services.marketdata"):
+        marketdata.to_stars(session, Decimal("1"), Currency.TON)
+
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "пропускаются" in text
+    assert "Торговля" in text
+
+
+def test_conversion_refuses_rather_than_guesses(session):
+    """Без курса пересчёт не выдаёт догадку — он молчит."""
     first = marketdata.to_stars(session, Decimal("1"), Currency.TON)
     second = marketdata.to_stars(session, Decimal("1"), Currency.TON)
 
-    assert first == second == marketdata.DEFAULT_STARS_PER_TON
+    assert first is None and second is None
 
 
 def test_real_rate_does_not_warn(session, caplog):
