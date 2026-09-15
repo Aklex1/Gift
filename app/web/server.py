@@ -52,6 +52,35 @@ ROI_RANGES: dict[str, Decimal | None] = {
 }
 
 
+def _next_step(position) -> str:
+    """Что произойдёт с позицией дальше и почему.
+
+    Самый частый вопрос о портфеле — «оно уже продаётся?». Статус
+    отвечает на него словом held/listed, но не объясняет, выставится
+    ли лот сам и что этому мешает.
+    """
+    from app.enums import PositionStatus
+    from app.services import runtime
+
+    if position.status is PositionStatus.SOLD:
+        return "продано"
+    if position.status is PositionStatus.LISTED:
+        return "выставлено, репрайсер снижает цену по расписанию"
+
+    if position.resale_available_at and position.resale_available_at > utcnow():
+        return (
+            f"ждёт окончания cooldown "
+            f"({position.resale_available_at:%d.%m %H:%M} UTC)"
+        )
+
+    market = position.custody_market
+    if runtime.mode() is TradeMode.SAFE:
+        return "не выставится: режим SAFE запрещает торговые операции"
+    if not runtime.write_enabled(market):
+        return f"не выставится: боевой режим {market.value} выключен"
+    return "будет выставлено автоматически в ближайшие 5 минут"
+
+
 def _last_scan_duration() -> int:
     """Сколько занял последний проход — чтобы подсказать интервал."""
     from app.services import scanner
@@ -517,6 +546,7 @@ async def portfolio_page(
                         )
                     ),
                     "locked_until": position.resale_available_at,
+                    "next_step": _next_step(position),
                 }
             )
         closed = (

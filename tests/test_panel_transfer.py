@@ -188,3 +188,91 @@ def test_cooldown_shown(panel, session):
 
     assert "На Portals" not in page
     assert "до " in page
+
+
+# --- что будет с позицией дальше --------------------------------------
+
+
+def _step(session, **changes):
+    """Пояснение для позиции с заданными изменениями."""
+    from app.models import Position
+    from app.web.server import _next_step
+
+    position = session.get(Position, 1)
+    for key, value in changes.items():
+        setattr(position, key, value)
+    session.flush()
+    return _next_step(position)
+
+
+def test_held_in_safe_mode_will_not_list(panel, session):
+    """В SAFE подарок не выставится, и сказано почему."""
+    step = _step(session)
+
+    assert "SAFE" in step
+    assert "не выставится" in step
+
+
+def test_held_with_market_off(panel, session):
+    """В SEMI, но с выключенной площадкой — причина другая."""
+    from app.enums import TradeMode
+    from app.services import runtime, store
+
+    runtime.set_mode(TradeMode.SEMI)
+    store.invalidate()
+    try:
+        step = _step(session)
+    finally:
+        runtime.set_mode(TradeMode.SAFE)
+        store.invalidate()
+
+    assert "боевой режим" in step
+    assert "telegram" in step
+
+
+def test_held_ready_to_list(panel, session):
+    """Когда всё включено — сказано, что выставится само."""
+    from app.enums import Market, TradeMode
+    from app.services import runtime, store
+
+    runtime.set_mode(TradeMode.SEMI)
+    runtime.set_write_enabled(Market.TELEGRAM, True)
+    store.invalidate()
+    try:
+        step = _step(session)
+    finally:
+        runtime.set_mode(TradeMode.SAFE)
+        runtime.set_write_enabled(Market.TELEGRAM, False)
+        store.invalidate()
+
+    assert "будет выставлено автоматически" in step
+
+
+def test_cooldown_beats_other_reasons(panel, session):
+    """Пока идёт cooldown, называется он, а не режим.
+
+    Иначе человек пойдёт включать боевой режим, хотя дело не в нём.
+    """
+    from app.models import utcnow
+
+    step = _step(session, resale_available_at=utcnow() + dt.timedelta(hours=3))
+
+    assert "cooldown" in step
+
+
+def test_listed_position_explained(panel, session):
+    """Выставленная позиция объясняет, что с ней происходит теперь."""
+    from app.enums import PositionStatus
+
+    step = _step(session, status=PositionStatus.LISTED)
+
+    assert "выставлено" in step
+    assert "репрайсер" in step
+
+
+def test_column_visible_in_panel(panel):
+    """Пояснение видно на странице, а не только в коде."""
+    page = panel.get("/portfolio", auth=AUTH).text
+
+    assert "Что дальше" in page
+    assert "не выставится" in page
