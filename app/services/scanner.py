@@ -362,6 +362,13 @@ async def gather_sources(
     """
     sources: list[MarketSnapshot] = []
 
+    # Собственные наблюдения нужны сразу: только они говорят, сколько
+    # таких лотов реально выставлено. Площадки этого числа не дают, а
+    # без него ликвидность в риске считать не на чем.
+    own = marketdata.snapshot_for(
+        session, collection=dto.gift.collection, model=dto.gift.model
+    )
+
     # 1. Официальная оценка Telegram — доступна по любому подарку,
     #    у которого есть slug, независимо от того, где он продаётся.
     slug = dto.gift.slug or (dto.external_id if dto.market is Market.TELEGRAM else None)
@@ -401,16 +408,27 @@ async def gather_sources(
                                 collection=dto.gift.collection,
                                 model=dto.gift.model,
                                 model_floor=floor_stars,
-                                listed_count=len(data.get("models") or {}),
+                                listed_count=own.active_listings,
+                                models_listed=len(data.get("models") or {}),
                             )
                         )
             except Exception as exc:  # noqa: BLE001
                 log.debug("Portals: floor модели недоступен: %s", exc)
 
-    # 3. Собственные наблюдения — они же дают скорость продаж.
-    own = marketdata.snapshot_for(
-        session, collection=dto.gift.collection, model=dto.gift.model
+    # 3. Состоявшиеся продажи на Fragment — цена сделки и её время.
+    #    Единственный источник, который отвечает не «почём просят», а
+    #    «почём купили». Берётся из базы: страницы обходит отдельная
+    #    задача, здесь сетевого запроса нет.
+    fragment = marketdata.snapshot_for(
+        session,
+        collection=dto.gift.collection,
+        model=dto.gift.model,
+        market=Market.FRAGMENT,
     )
+    if fragment.sample_size:
+        sources.append(fragment)
+
+    # 4. Собственные наблюдения.
     if own.median_price or own.floor_price or own.velocity_per_day:
         sources.append(own)
 
@@ -509,12 +527,18 @@ async def snapshot_for_listing(
                             session, collection_floor, Currency.TON
                         )
                     if floor_stars:
+                        seen_now = marketdata.snapshot_for(
+                            session,
+                            collection=dto.gift.collection,
+                            model=dto.gift.model,
+                        )
                         snapshot = marketdata.snapshot_from_attribute_floor(
                             collection=dto.gift.collection,
                             model=dto.gift.model,
                             model_floor=floor_stars,
                             collection_floor=collection_floor,
-                            listed_count=len(data.get("models") or {}),
+                            listed_count=seen_now.active_listings,
+                            models_listed=len(data.get("models") or {}),
                         )
                         # Floor площадки даёт цену, но молчит о том,
                         # как быстро такие лоты уходят. Скорость берём

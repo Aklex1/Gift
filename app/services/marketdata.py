@@ -205,8 +205,13 @@ class MarketSnapshot:
 
     @property
     def days_to_sell(self) -> float | None:
-        """Ожидаемый срок продажи при текущей скорости рынка."""
-        if self.velocity_per_day <= 0:
+        """Ожидаемый срок продажи при текущей скорости рынка.
+
+        Неизвестен, пока не известны обе половины: как быстро такие
+        лоты уходят и сколько их сейчас в очереди. Назвать срок по
+        одной из них — значит выдать догадку за расчёт.
+        """
+        if self.velocity_per_day <= 0 or self.active_listings <= 0:
             return None
         # Сколько дней уйдёт, чтобы рынок «съел» текущую выкладку.
         return round(max(1.0, self.active_listings / self.velocity_per_day), 1)
@@ -359,6 +364,7 @@ def snapshot_from_attribute_floor(
     model_floor: Decimal,
     collection_floor: Decimal | None = None,
     listed_count: int = 0,
+    models_listed: int = 0,
 ) -> MarketSnapshot:
     """Срез рынка по floor конкретной модели.
 
@@ -366,6 +372,14 @@ def snapshot_from_attribute_floor(
     это лучшая доступная оценка справедливой стоимости: подарок с
     редкой моделью стоит кратно дороже floor коллекции. Собственную
     историю продаж пришлось бы копить неделями.
+
+    Args:
+        listed_count: сколько лотов этой модели выставлено. Отвечает
+            на вопрос «легко ли будет продать» и идёт в риск.
+        models_listed: сколько моделей вообще есть в таблице floor'ов
+            площадки. Про этот конкретный лот не говорит ничего — это
+            мера полноты самой таблицы, и только на доверие к floor
+            она и влияет.
     """
     return MarketSnapshot(
         collection=collection,
@@ -376,8 +390,14 @@ def snapshot_from_attribute_floor(
         # экземпляры, и оценка занизилась бы до бессмыслицы.
         floor_price=model_floor,
         sample_size=max(1, listed_count),
-        # Данные приходят от самой площадки и обновляются постоянно.
-        confidence=Confidence.HIGH if listed_count >= 3 else Confidence.MEDIUM,
+        # Данные приходят от самой площадки и обновляются постоянно:
+        # доверие высокое, если таблица floor'ов заполнена либо лотов
+        # этой модели видно достаточно.
+        confidence=(
+            Confidence.HIGH
+            if max(listed_count, models_listed) >= 3
+            else Confidence.MEDIUM
+        ),
         velocity_per_day=0.0,
         newest=utcnow(),
         active_listings=listed_count,

@@ -190,6 +190,27 @@ async def task_feed() -> None:
     await _guarded("feed", run)
 
 
+async def task_fragment() -> None:
+    """Собрать состоявшиеся продажи с Fragment.
+
+    Единственный доступный источник, отвечающий на вопрос «почём
+    купили», а не «почём просят». Из него берётся скорость продаж —
+    без неё каждая сделка получает надбавку к риску за незнание.
+    """
+
+    async def run() -> None:
+        from app.services import fragment_sync
+
+        report = await fragment_sync.sync()
+        if report.get("sales"):
+            log.info(
+                "Fragment: пар %s, новых сделок %s",
+                report["pairs"], report["sales"],
+            )
+
+    await _guarded("fragment", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -251,6 +272,9 @@ async def main() -> None:
     scheduler.add_job(task_tokens, "interval", seconds=1800, id="tokens")
     # Канал публикует раз в сутки — чаще получаса смотреть незачем.
     scheduler.add_job(task_feed, "interval", seconds=1800, id="feed")
+    # Продажи копятся сами по себе; чаще, чем раз в десять минут,
+    # ходить на чужой сайт незачем.
+    scheduler.add_job(task_fragment, "interval", seconds=600, id="fragment")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     # Интервал сканирования меняют из панели, а планировщику он задан
     # при запуске. Без пересборки задания настройка молча не работала

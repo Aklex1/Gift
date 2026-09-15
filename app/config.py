@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     )
     getgems_api_key: str = Field(default="", alias="GETGEMS_API_KEY")
 
+    #: Витрина Telegram на TON. Ключ не нужен: страницы публичные, а
+    #: торговать там бот не может — сделка требует подписи кошельком.
+    fragment_base_url: str = Field(
+        default="https://fragment.com", alias="FRAGMENT_BASE_URL"
+    )
+
     # ------------------------------------------------------------------
     # TON
     # ------------------------------------------------------------------

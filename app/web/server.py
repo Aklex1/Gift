@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 
-from app.adapters.registry import capability_matrix, probe_all
+from app.adapters.registry import capability_matrix, probe_all, tradable_markets
 from app.config import settings
 from app.db import session_scope
 from app.enums import Market, TradeMode, display_currency
@@ -1103,7 +1103,7 @@ async def strategies_page(
         context={
             "strategies": rows,
             "accounts": accounts,
-            "all_markets": [m.value for m in Market],
+            "all_markets": [m.value for m in tradable_markets()],
             "modes": [m.value for m in TradeMode],
             "confidences": [c.value for c in Confidence],
             "global_mode": runtime.mode().value,

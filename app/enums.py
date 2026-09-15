@@ -29,6 +29,7 @@ class Market(ValueStr):
     MRKT = "mrkt"                  # mrkt.land, приватный TMA API
     TONNEL = "tonnel"              # marketplace.tonnel.network, приватный API
     GETGEMS = "getgems"            # getgems.io, публичный API + on-chain
+    FRAGMENT = "fragment"          # fragment.com, витрина Telegram, только чтение
 
 
 class Capability(ValueStr):

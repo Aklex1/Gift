@@ -32,6 +32,8 @@ class GetgemsAdapter(HttpMarketAdapter):
 
     market = Market.GETGEMS
     native_currency = Currency.TON
+    # Сделка требует подписи кошельком — ключей у бота нет.
+    read_only = True
     auth_header = "Authorization"
 
     def __init__(self, base_url: str | None = None, auth: str | None = None) -> None:

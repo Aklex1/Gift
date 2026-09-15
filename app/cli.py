@@ -1223,6 +1223,73 @@ def cmd_rotate_key(new_key: str | None, dry_run: bool) -> int:
     return 0
 
 
+async def _sales(collection: str | None, model: str | None) -> int:
+    """Показать состоявшиеся продажи с Fragment и скорость по ним.
+
+    Отвечает на вопрос, на который до Fragment ответить было нечем:
+    не «почём просят», а «почём и как часто покупают». По нему видно,
+    откуда берётся срок продажи в обосновании кандидата.
+    """
+    import datetime as dt
+    from decimal import Decimal
+
+    from app.adapters.fragment import FilterIgnored
+    from app.adapters.registry import get_adapter
+    from app.db import init_db
+    from app.enums import Market
+    from app.services import fragment_sync
+
+    if not collection:
+        # Обход по кругу ведётся по базе; разовый запрос по подарку —
+        # нет, и требовать для него живую БД незачем.
+        init_db()
+        report = await fragment_sync.sync()
+        if not report.get("ok"):
+            print(f"✗ {report.get('detail')}", file=sys.stderr)
+            return 1
+        print(
+            f"Обойдено пар: {report['pairs']} из {report['known']}, "
+            f"новых сделок: {report['sales']}"
+        )
+        for line in report.get("failed", []):
+            print(f"  ✗ {line}")
+        print("\nПо конкретному подарку: gift-cli sales --collection «имя» --model «модель»")
+        return 0
+
+    adapter = get_adapter(Market.FRAGMENT)
+    try:
+        sales = await adapter.history(collection=collection, model=model)
+    except FilterIgnored as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        print("  Проверьте написание модели — Fragment различает регистр.")
+        return 1
+    except Exception as exc:  # noqa: BLE001 - показываем причину, не падаем
+        print(f"✗ Не удалось получить историю: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 1
+
+    if not sales:
+        print("Продаж не найдено.")
+        return 0
+
+    what = f"{collection}" + (f" / {model}" if model else "")
+    print(f"=== {what}: продажи на Fragment ===")
+    for sale in sales[:15]:
+        print(f"  {sale.happened_at:%Y-%m-%d %H:%M}  {sale.price} {sale.currency.value}"
+              f"  {sale.gift.slug}")
+
+    prices = sorted(sale.price for sale in sales)
+    middle = prices[len(prices) // 2]
+    span = (max(s.happened_at for s in sales) - min(s.happened_at for s in sales))
+    days = max(span.total_seconds() / 86400, 1.0)
+    print(
+        f"\nВсего: {len(sales)} сделок за {days:.1f} дн. — "
+        f"{len(sales) / days:.2f} в день"
+    )
+    print(f"Медиана: {middle}, разброс: {prices[0]} … {prices[-1]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -1250,6 +1317,7 @@ def main(argv: list[str] | None = None) -> int:
             "transfer-target",
             "lots",
             "feed",
+            "sales",
         ],
     )
     parser.add_argument(
@@ -1273,7 +1341,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--collection",
-        help="коллекция для команды lots",
+        help="коллекция для команд lots и sales",
+    )
+    parser.add_argument(
+        "--model",
+        help="модель подарка для команды sales",
     )
     parser.add_argument(
         "--dry-run",
@@ -1306,6 +1378,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "lots":
         return asyncio.run(_lots(args.market, args.collection))
+
+    if args.command == "sales":
+        return asyncio.run(_sales(args.collection, args.model))
 
     if args.command == "rotate-key":
         return cmd_rotate_key(args.new_key, args.dry_run)

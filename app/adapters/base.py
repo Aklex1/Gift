@@ -177,6 +177,13 @@ class MarketAdapter(abc.ABC):
     #: Валюта, в которой площадка номинирует цены по умолчанию.
     native_currency: Currency = Currency.STARS
 
+    #: Площадка пригодна только для чтения — купить на ней нельзя и не
+    #: будет можно. Это свойство самой площадки, а не текущих настроек:
+    #: статус BUY гаснет и от протухшего токена, и предлагать по нему
+    #: выбор стратегии значило бы то убирать площадку из списка, то
+    #: возвращать.
+    read_only: bool = False
+
     def status_of(self, capability: Capability) -> CapabilityStatus:
         """Текущий статус возможности."""
         return self.capabilities.get(capability, CapabilityStatus.UNAVAILABLE)

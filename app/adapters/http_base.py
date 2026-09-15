@@ -148,7 +148,41 @@ class HttpMarketAdapter(MarketAdapter):
         retries: int = 2,
         **kwargs: Any,
     ) -> Any:
-        """Выполнить запрос и вернуть разобранный JSON.
+        """Выполнить запрос и вернуть разобранный JSON."""
+        response = await self.send(
+            method, path, write=write, retries=retries, **kwargs
+        )
+        try:
+            return response.json()
+        except ValueError:
+            # Cloudflare-заглушка или HTML вместо JSON.
+            raise AuthRequired(
+                f"{self.market.value}: получен не-JSON ответ "
+                f"(вероятно защита Cloudflare или устаревший эндпоинт)"
+            ) from None
+
+    async def request_text(
+        self, method: str, path: str, *, retries: int = 2, **kwargs: Any
+    ) -> str:
+        """Выполнить запрос и вернуть тело как текст.
+
+        Нужно площадкам без API, которые отдают обычные страницы.
+        Write-операций по такому пути нет и быть не должно: разбор
+        разметки — не та надёжность, при которой можно тратить деньги.
+        """
+        response = await self.send(method, path, retries=retries, **kwargs)
+        return response.text
+
+    async def send(
+        self,
+        method: str,
+        path: str,
+        *,
+        write: bool = False,
+        retries: int = 2,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Выполнить запрос с повторами и вернуть ответ целиком.
 
         Для write-операций обрыв связи превращается в OutcomeUnknown:
         повторять вслепую нельзя, деньги могли уйти.
@@ -185,14 +219,7 @@ class HttpMarketAdapter(MarketAdapter):
                 continue
 
             response.raise_for_status()
-            try:
-                return response.json()
-            except ValueError:
-                # Cloudflare-заглушка или HTML вместо JSON.
-                raise AuthRequired(
-                    f"{self.market.value}: получен не-JSON ответ "
-                    f"(вероятно защита Cloudflare или устаревший эндпоинт)"
-                ) from None
+            return response
 
         if last_exc:
             raise last_exc

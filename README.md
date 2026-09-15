@@ -193,6 +193,7 @@ app/
     telegram_gateway  одна MTProto-сессия, очередь, FloodWait-пейсинг
     telegram_mtproto  официальный resale-маркет: поиск, покупка, листинг
     portals/mrkt/tonnel/getgems   чтение цен внешних площадок
+    fragment.py       витрина Telegram: состоявшиеся продажи, только чтение
     ton.py            баланс TON, только чтение
   services/
     budget.py         атомарный ledger: резерв, списание, лимиты
@@ -201,6 +202,7 @@ app/
     valuation.py      ROI после комиссий, risk score 0-100
     strategy.py       фильтры, бюджеты, приоритеты
     scanner.py        обход рынков и отбор кандидатов
+    fragment_sync.py  сбор состоявшихся продаж — источник скорости
     executor.py       покупка с предохранителями
     portfolio.py      позиции, PnL, сверка инвентаря
     repricer.py       лестница снижения цены до пола безубыточности

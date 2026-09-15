@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from app.adapters.base import Capability, CapabilityStatus, MarketAdapter
+from app.adapters.fragment import FragmentAdapter
 from app.adapters.getgems import GetgemsAdapter
 from app.adapters.mrkt import MrktAdapter
 from app.adapters.portals import PortalsAdapter
@@ -33,6 +34,7 @@ def get_adapter(market: Market | str) -> MarketAdapter:
             Market.MRKT: MrktAdapter,
             Market.TONNEL: TonnelAdapter,
             Market.GETGEMS: GetgemsAdapter,
+            Market.FRAGMENT: FragmentAdapter,
         }
         _ADAPTERS[market] = builders[market]()
     return _ADAPTERS[market]
@@ -63,6 +65,18 @@ def telegram_adapter_for(account) -> TelegramAdapter:
 def all_adapters() -> list[MarketAdapter]:
     """Все адаптеры в фиксированном порядке."""
     return [get_adapter(m) for m in Market]
+
+
+def tradable_markets() -> list[Market]:
+    """Площадки, на которых бот в принципе может купить.
+
+    Их и предлагаем стратегии. Площадка, откуда можно только читать
+    (Fragment, Getgems), в списке «где искать лоты» означала бы
+    кандидатов, которых нельзя купить ни при каких настройках.
+    """
+    return [
+        adapter.market for adapter in all_adapters() if not adapter.read_only
+    ]
 
 
 def capability_matrix() -> dict[str, dict[str, str]]:
