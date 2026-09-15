@@ -364,3 +364,80 @@ def test_collection_floor_is_not_used_as_a_trait():
     floor, _ = scanner.rarest_attribute_floor(FLOORS, _gift(symbol="Butterfly"))
 
     assert floor == Decimal("5.51")
+
+
+# --- наценка не поднимает цену выше floor ------------------------------
+#
+# Третий живой случай, и самый тихий из трёх. Snake Box #108974 на
+# Portals: модель, символ, фон и минимальная цена коллекции — всё по
+# 3.95 GRAM, и сам лот стоит столько же. То есть он и есть floor.
+#
+# Панель показывала по нему разрыв 0% и ROI 9.2%. Вся «прибыль»
+# бралась из наценки стратегии +15%: потолок площадки применялся до
+# неё, и наценка его перешагивала. Продать выше floor нельзя — рядом
+# стоят такие же лоты, и покупатель возьмёт их раньше.
+
+
+def test_buying_at_floor_is_not_a_deal(session, fees):
+    """Покупка ровно по floor прибыли не даёт, сколько ни наценивай."""
+    snapshot = marketdata.snapshot_from_attribute_floor(
+        collection="Snake Box", model="Pink Bloom",
+        model_floor=Decimal("394"), listed_count=2, models_listed=40,
+    )
+
+    result = valuation.evaluate(
+        session,
+        buy_market=Market.PORTALS, buy_price=Decimal("394"),
+        sell_market=Market.PORTALS, snapshot=snapshot,
+        is_official_api=False, target_markup=Decimal("0.15"),
+        venue_floor=Decimal("394"),
+    )
+
+    assert result.expected_sale_price == Decimal("394")
+    assert result.net_roi < 0
+    assert any("не продать" in reason for reason in result.reasons)
+
+
+def test_markup_does_not_invent_profit(session, fees):
+    """Без наценки и с наценкой у лота по floor итог одинаковый.
+
+    Наценка — пожелание продавца, а не цена рынка. Если она меняет
+    ROI лота, купленного по floor, значит прибыль взялась из неё.
+    """
+    snapshot = marketdata.snapshot_from_attribute_floor(
+        collection="Snake Box", model="Pink Bloom",
+        model_floor=Decimal("394"), listed_count=2, models_listed=40,
+    )
+    common = dict(
+        buy_market=Market.PORTALS, buy_price=Decimal("394"),
+        sell_market=Market.PORTALS, snapshot=snapshot,
+        is_official_api=False, venue_floor=Decimal("394"),
+    )
+
+    without = valuation.evaluate(session, **common, target_markup=Decimal("0"))
+    with_markup = valuation.evaluate(session, **common, target_markup=Decimal("0.5"))
+
+    assert without.net_roi == with_markup.net_roi
+
+
+def test_real_discount_still_earns(session, fees):
+    """А настоящая находка по-прежнему считается прибыльной.
+
+    Потолок обрезает пожелания, а не саму сделку: купили заметно ниже
+    floor — продаёте по floor и зарабатываете разницу.
+    """
+    snapshot = marketdata.snapshot_from_attribute_floor(
+        collection="Snake Box", model="Pink Bloom",
+        model_floor=Decimal("394"), listed_count=2, models_listed=40,
+    )
+
+    result = valuation.evaluate(
+        session,
+        buy_market=Market.PORTALS, buy_price=Decimal("300"),
+        sell_market=Market.PORTALS, snapshot=snapshot,
+        is_official_api=False, target_markup=Decimal("0.15"),
+        venue_floor=Decimal("394"),
+    )
+
+    assert result.expected_sale_price == Decimal("394")
+    assert result.net_roi > Decimal("0.2")

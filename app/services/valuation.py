@@ -340,17 +340,24 @@ def evaluate(
         reasons.append(
             f"расчёт по floor {snapshot.floor_price}, он ниже медианы {fair_value}"
         )
-    # Потолок площадки, где продаём: выше самого дешёвого конкурента
-    # лот не уйдёт, какой бы ни была оценка с чужой площадки.
-    if venue_floor and venue_floor > 0 and venue_floor < expected_sale:
-        reasons.append(
-            f"на {sell_market.value} такие лоты стоят от {venue_floor} — "
-            f"дороже не продать, хотя оценка {expected_sale}"
-        )
-        expected_sale = venue_floor
     if target_markup > 0:
         expected_sale = expected_sale * (Decimal(1) + target_markup)
         reasons.append(f"наценка стратегии +{target_markup:.0%}")
+
+    # Потолок площадки — последним, уже поверх наценки.
+    #
+    # Наценка — это пожелание, а не цена. Рядом стоят лоты по floor, и
+    # покупатель возьмёт их раньше нашего: чтобы уйти, вставать надо не
+    # выше floor. Пока потолок применялся до наценки, она его
+    # перешагивала, и лот, купленный ровно по floor, показывал ROI в
+    # размере наценки — прибыль ниоткуда, из одного лишь пожелания.
+    ceiling = venue_floor if venue_floor and venue_floor > 0 else snapshot.floor_price
+    if ceiling and ceiling > 0 and ceiling < expected_sale:
+        reasons.append(
+            f"на {sell_market.value} такие лоты стоят от {ceiling} — "
+            f"дороже не продать, сколько ни наценивай"
+        )
+        expected_sale = ceiling
 
     total_cost = total_cost_of(buy_price, buy_fees)
     net_proceeds = net_proceeds_from(expected_sale, sell_fees)
