@@ -150,6 +150,24 @@ DIVISOR_BY_CODE = {
     "TON": Decimal(10) ** 9,
 }
 
+#: Сколько живёт кэш официальных оценок, в секундах.
+#:
+#: Оценка по подарку — отдельный запрос к Telegram на каждый лот, и
+#: именно в них уходило почти всё время прохода: 250 лотов по секунде.
+#: Между проходами набор лотов почти не меняется, а floor коллекции за
+#: минуты не убегает — столько же живёт и кэш floor'ов Portals.
+VALUE_CACHE_SEC = 600.0
+
+#: Оценки по подаркам: slug -> (когда получили, что получили).
+#: Общий на процесс: адаптеров на аккаунт несколько, а ответ Telegram
+#: один и тот же, от чьего имени ни спрашивай.
+_value_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def forget_value_cache() -> None:
+    """Забыть накопленные оценки. Нужно тестам и ручной проверке."""
+    _value_cache.clear()
+
 
 class TelegramAdapter(MarketAdapter):
     """Официальный маркет перепродажи подарков Telegram."""
@@ -350,7 +368,13 @@ class TelegramAdapter(MarketAdapter):
         Это самый качественный источник данных для valuation — цифры
         приходят от самого Telegram, а не из нашей выборки.
         """
+        import time
+
         from telethon.tl import functions
+
+        cached = _value_cache.get(slug)
+        if cached and time.monotonic() - cached[0] < VALUE_CACHE_SEC:
+            return cached[1]
 
         res = await self.gateway.call(
             functions.payments.GetUniqueStarGiftValueInfoRequest(slug=slug)
@@ -362,7 +386,7 @@ class TelegramAdapter(MarketAdapter):
         def conv(v: Any) -> Decimal | None:
             return None if v is None else Decimal(v) / divisor
 
-        return {
+        info = {
             # Валюта ответа — та, в которой Telegram показывает цены
             # этому аккаунту. Незнакомый код не подменяется ничем:
             # оценка без понятной валюты — это просто число.
@@ -389,6 +413,8 @@ class TelegramAdapter(MarketAdapter):
             "value_is_average": bool(getattr(res, "value_is_average", False)),
             "initial_sale_price": conv(getattr(res, "initial_sale_price", None)),
         }
+        _value_cache[slug] = (time.monotonic(), info)
+        return info
 
     async def history(
         self, *, collection: str | None = None, model: str | None = None, limit: int = 200

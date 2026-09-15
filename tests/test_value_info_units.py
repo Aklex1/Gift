@@ -40,6 +40,21 @@ class _Res:
         self.initial_sale_price = None
 
 
+@pytest.fixture(autouse=True)
+def fresh_cache():
+    """Каждому тесту — чистый кэш оценок.
+
+    Оценки кэшируются по slug на весь процесс, иначе проход тратил бы
+    по запросу на лот. В тестах подарок один и тот же, и без сброса
+    второй тест читал бы ответ первого.
+    """
+    from app.adapters import telegram_mtproto as tm
+
+    tm.forget_value_cache()
+    yield
+    tm.forget_value_cache()
+
+
 async def _info(res):
     """Разобранная оценка для этого ответа."""
     from app.adapters.telegram_mtproto import TelegramAdapter

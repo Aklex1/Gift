@@ -61,7 +61,10 @@ DEFAULT_WRITE_CONTRACT = {
 
 
 #: Минимум между попытками продлить токен после 401.
-RENEW_COOLDOWN_SEC = 120.0
+RENEW_COOLDOWN_SEC = 120
+
+#: Сколько живёт кэш floor'ов по атрибутам.
+FLOOR_CACHE_SEC = 600.0
 
 
 def short_collection_name(collection: str) -> str:
@@ -419,7 +422,7 @@ class PortalsAdapter(HttpMarketAdapter):
             {"models": {название: floor}, "symbols": {...}, "backdrops": {...}}
         """
         cached = self._floor_cache.get(collection)
-        if cached and (dt.datetime.utcnow() - cached[0]).total_seconds() < 600:
+        if cached and (dt.datetime.utcnow() - cached[0]).total_seconds() < FLOOR_CACHE_SEC:
             return cached[1]
 
         short_name = short_collection_name(collection)
@@ -440,6 +443,20 @@ class PortalsAdapter(HttpMarketAdapter):
                 collection,
             )
         return out
+
+    def cached_floors(self, collection: str) -> dict | None:
+        """Floor'ы по атрибутам из кэша — без запроса к площадке.
+
+        Нужно дешёвой отсечке в сканере: она прикидывает потолок цены
+        по тому, что уже известно, и ходить за этим в сеть не должна —
+        иначе экономия превратится в такой же запрос.
+        """
+        cached = self._floor_cache.get(collection)
+        if not cached:
+            return None
+        if (dt.datetime.utcnow() - cached[0]).total_seconds() >= FLOOR_CACHE_SEC:
+            return None
+        return cached[1]
 
     @staticmethod
     def _parse_attribute_floors(

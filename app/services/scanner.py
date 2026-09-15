@@ -73,6 +73,7 @@ REJECTION_LABELS = {
     "risk": "риск выше допустимого",
     "disagreement": "источники разошлись в цене — оценке нельзя верить",
     "no_fx": "нет свежего курса GRAM → Stars, цену не пересчитать",
+    "cheap_reject": "цена заведомо выше любой оценки — отсеян без запроса",
 }
 
 #: Во сколько раз источники могут разойтись, прежде чем оценка
@@ -408,6 +409,100 @@ def live_prices(sources: list[MarketSnapshot]) -> dict[Market, Decimal]:
     return out
 
 
+#: Запас к дешёвому потолку перед отсечкой.
+#:
+#: Потолок считается по тому, что уже лежит в базе и в кэше, а полный
+#: сбор источников может найти цену выше. Запас делает отсечку заведомо
+#: щедрой: лишний лот пройдёт в дорогую проверку, но настоящая находка
+#: не потеряется молча. Экономия от этого почти не страдает — мимо
+#: порога такие лоты проходят не на проценты, а в разы.
+CHEAP_MARGIN = Decimal("1.3")
+
+
+def cheap_ceiling(session: Session, dto: ListingDTO) -> Decimal | None:
+    """Оптимистичная верхняя граница цены продажи — без единого запроса.
+
+    Оценка лота стоит одного обращения к Telegram на каждый лот, и
+    именно в них уходит почти всё время прохода. Но большинство лотов
+    не проходят порог с запасом в разы, и чтобы это понять, сеть не
+    нужна: хватит того, что уже собрано.
+
+    Берётся максимум из всего известного — намеренно завышенный, чтобы
+    отсечка могла только ошибиться в сторону лишней работы.
+
+    Returns:
+        Цена в Stars, выше которой продать точно не выйдет, либо None,
+        когда не известно ничего и судить не на чем.
+    """
+    from app.services import salestats
+
+    best: Decimal | None = None
+
+    def offer(value) -> None:
+        nonlocal best
+        if value and value > 0 and (best is None or value > best):
+            best = Decimal(value)
+
+    # Свои наблюдения: и по этой модели, и по коллекции целиком.
+    for model in (dto.gift.model, None):
+        for market in (dto.market, None):
+            own = marketdata.snapshot_for(
+                session,
+                collection=dto.gift.collection,
+                model=model,
+                market=market,
+            )
+            offer(own.floor_price)
+            offer(own.median_price)
+
+    # Floor'ы Portals — только если кэш уже прогрет, греть его здесь
+    # нельзя: это был бы тот самый запрос, который мы экономим.
+    adapter = get_adapter(Market.PORTALS)
+    cached = getattr(adapter, "cached_floors", None)
+    if cached is not None:
+        floors = cached(dto.gift.collection)
+        if floors:
+            attr_floor, _ = rarest_attribute_floor(floors, dto.gift)
+            if attr_floor:
+                offer(marketdata.to_stars(session, attr_floor, Currency.TON))
+
+    # Состоявшиеся сделки — они уже в базе.
+    stats = salestats.sale_stats(
+        session, collection=dto.gift.collection, model=dto.gift.model
+    )
+    offer(stats.high)
+    offer(stats.median)
+
+    return best * CHEAP_MARGIN if best is not None else None
+
+
+def hopeless(
+    session: Session, dto: ListingDTO, price_stars: Decimal, need_roi: Decimal
+) -> bool:
+    """Безнадёжен ли лот даже при самой щедрой оценке.
+
+    Считает по той же арифметике, что и полная оценка, но с потолком
+    вместо справедливой цены. Если и так не дотягивает до самого
+    мягкого порога из включённых стратегий — сеть тревожить незачем.
+    """
+    ceiling = cheap_ceiling(session, dto)
+    if ceiling is None:
+        # Не известно ничего: судить не на чем, идём длинным путём.
+        return False
+
+    buy_fees = valuation.fees_in(
+        session, valuation.get_fees(session, dto.market), Currency.STARS
+    )
+    sell_fees = valuation.fees_in(
+        session, valuation.get_fees(session, dto.market), Currency.STARS
+    )
+    cost = valuation.total_cost_of(price_stars, buy_fees)
+    if cost <= 0:
+        return False
+    proceeds = valuation.net_proceeds_from(ceiling, sell_fees)
+    return ((proceeds - cost) / cost) < need_roi
+
+
 def rarest_attribute_floor(
     floors: dict, gift: "GiftRef"
 ) -> tuple[Decimal | None, str | None]:
@@ -737,6 +832,9 @@ async def scan_once() -> dict:
                 "name": s.name,
                 "markets": [str(m).lower() for m in (s.markets or [])],
                 "collections": list(s.collections or []),
+                # Нужен дешёвой отсечке: она сравнивает с самым мягким
+                # порогом из включённых стратегий.
+                "min_roi": Decimal(s.min_roi or 0),
             }
             for s in strategies
         ]
@@ -919,6 +1017,17 @@ async def evaluate_listing(
             # в площадках вместо настроек.
             if dto.currency is not Currency.STARS:
                 rejections["no_fx"] += 1
+            return (0, rejections)
+
+        # Дешёвая отсечка перед дорогой частью: почти все лоты не
+        # проходят порог с запасом в разы, и понять это можно по
+        # накопленным данным, не обращаясь к площадкам.
+        need_roi = min(
+            (Decimal(item.get("min_roi") or 0) for item in plan),
+            default=Decimal(0),
+        )
+        if hopeless(session, dto, price_stars, need_roi):
+            rejections["cheap_reject"] += len(plan)
             return (0, rejections)
 
         sources = await gather_sources(session, dto)
