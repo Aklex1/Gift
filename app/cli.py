@@ -1400,6 +1400,48 @@ async def _value(slug: str | None) -> int:
     return 0
 
 
+async def _fast() -> int:
+    """Прогнать один обход быстрого контура и показать результат.
+
+    Нужна, чтобы посмотреть на горячий список и на стоимость обхода до
+    того, как включать его в панели на постоянную работу.
+    """
+    from app.db import init_db, session_scope
+    from app.services import fastlane, runtime
+
+    init_db()
+
+    with session_scope() as session:
+        pairs = fastlane.hot_pairs(session, runtime.fast_pairs())
+
+    print("=== горячий список ===")
+    if not pairs:
+        print("  пусто: нет включённых стратегий либо не набралось данных")
+        print("  наберите историю сделок: gift-cli sales")
+        return 0
+    for market, collection in pairs:
+        print(f"  {market.value}/{collection}")
+
+    if not runtime.fast_lane_enabled():
+        print("\nКонтур выключен — обход не выполняется.")
+        print("Включить: панель -> «Торговля» -> «Быстрый контур».")
+        return 0
+
+    print(f"\nОбход, порог скрининга {runtime.fast_gap():.0%}...")
+    report = await fastlane.sweep()
+    if not report.get("ok"):
+        print(f"✗ {report.get('detail')}", file=sys.stderr)
+        return 1
+
+    print(f"  лотов просмотрено: {report['seen']}")
+    print(f"  прошло скрининг:   {report['screened']}")
+    print(f"  стало кандидатами: {report['candidates']}")
+    print(f"  заняло:            {report['duration_sec']} c")
+    for note in report.get("notes", []):
+        print(f"  ✗ {note}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -1429,6 +1471,7 @@ def main(argv: list[str] | None = None) -> int:
             "feed",
             "sales",
             "value",
+            "fast",
         ],
     )
     parser.add_argument(
@@ -1499,6 +1542,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "value":
         return asyncio.run(_value(args.slug))
+
+    if args.command == "fast":
+        return asyncio.run(_fast())
 
     if args.command == "rotate-key":
         return cmd_rotate_key(args.new_key, args.dry_run)

@@ -482,6 +482,60 @@ async def position_transfer(
     return RedirectResponse(f"/portfolio?saved={note}", status_code=303)
 
 
+@app.post("/trading/fast-lane")
+async def trading_fast_lane(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Настроить быстрый контур: включение, частота, порог, размер списка.
+
+    Контур тратит запросы к площадкам постоянно, а не раз в несколько
+    минут, поэтому включается вручную и выключается одним флажком.
+    """
+    from app.models import AuditLog
+    from app.services import runtime
+
+    form = await request.form()
+    enabled = bool(form.get("fast_enabled"))
+    runtime.set_fast_lane(enabled)
+
+    parts = [f"Быстрый контур: {'включён' if enabled else 'выключен'}"]
+
+    raw = str(form.get("fast_interval") or "").strip()
+    if raw:
+        try:
+            parts.append(f"частота {runtime.set_fast_interval(int(Decimal(raw)))} c")
+        except (InvalidOperation, ValueError):
+            parts.append("частота не изменена: нужно число секунд")
+
+    raw = str(form.get("fast_gap") or "").strip().replace(",", ".")
+    if raw:
+        try:
+            applied = runtime.set_fast_gap(Decimal(raw) / Decimal(100))
+            parts.append(f"порог {applied:.0%}")
+        except (InvalidOperation, ValueError):
+            parts.append("порог не изменён: нужно число процентов")
+
+    raw = str(form.get("fast_pairs") or "").strip()
+    if raw:
+        try:
+            parts.append(f"коллекций {runtime.set_fast_pairs(int(Decimal(raw)))}")
+        except (InvalidOperation, ValueError):
+            parts.append("размер списка не изменён: нужно число")
+
+    with session_scope() as session:
+        session.add(
+            AuditLog(
+                actor="web",
+                action="runtime.fast_lane",
+                target="FAST_LANE",
+                payload={"enabled": enabled},
+            )
+        )
+
+    note = ", ".join(parts) + ". Воркер подхватит в течение 15 секунд."
+    return RedirectResponse(f"/trading?saved={note}", status_code=303)
+
+
 @app.post("/trading/scan-interval")
 async def trading_scan_interval(
     request: Request, _: str = Depends(require_auth)
@@ -840,7 +894,7 @@ async def trading_page(
     from app.adapters.registry import get_adapter
     from app.services import runtime
 
-    from app.services import arbitrage, fx, limits, notify
+    from app.services import arbitrage, fastlane, fx, limits, notify
 
     state = runtime.snapshot()
     with session_scope() as session:
@@ -890,6 +944,15 @@ async def trading_page(
             "scan_min": runtime.SCAN_INTERVAL_MIN,
             "scan_max": runtime.SCAN_INTERVAL_MAX,
             "last_scan_sec": _last_scan_duration(),
+            "fast": {
+                "enabled": runtime.fast_lane_enabled(),
+                "interval": runtime.fast_interval(),
+                "gap_pct": runtime.fast_gap() * 100,
+                "pairs": runtime.fast_pairs(),
+                "min": runtime.FAST_INTERVAL_MIN,
+                "max": runtime.FAST_INTERVAL_MAX,
+                "report": fastlane.last_report(),
+            },
             "arb": {
                 "enabled": arbitrage.enabled(),
                 "min_roi_pct": arbitrage.min_roi() * 100,

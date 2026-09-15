@@ -95,6 +95,26 @@ REJECTION_LABELS = {
 MAX_SOURCE_DISAGREEMENT = Decimal(50)
 
 
+def active_plan(strategies: list) -> list[dict]:
+    """Материализовать стратегии в простые словари.
+
+    Сессия закрывается до асинхронных вызовов, поэтому объекты ORM
+    дальше не живут: берём только нужные поля.
+    """
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "markets": [str(m).lower() for m in (s.markets or [])],
+            "collections": list(s.collections or []),
+            # Нужен дешёвой отсечке: она сравнивает с самым мягким
+            # порогом из включённых стратегий.
+            "min_roi": Decimal(s.min_roi or 0),
+        }
+        for s in strategies
+    ]
+
+
 def save_report(report: dict) -> None:
     """Сохранить отчёт о проходе, чтобы панель могла его показать."""
     import json
@@ -419,7 +439,9 @@ def live_prices(sources: list[MarketSnapshot]) -> dict[Market, Decimal]:
 CHEAP_MARGIN = Decimal("1.3")
 
 
-def cheap_ceiling(session: Session, dto: ListingDTO) -> Decimal | None:
+def cheap_ceiling(
+    session: Session, dto: ListingDTO, *, margin: Decimal | None = None
+) -> Decimal | None:
     """Оптимистичная верхняя граница цены продажи — без единого запроса.
 
     Оценка лота стоит одного обращения к Telegram на каждый лот, и
@@ -473,7 +495,9 @@ def cheap_ceiling(session: Session, dto: ListingDTO) -> Decimal | None:
     offer(stats.high)
     offer(stats.median)
 
-    return best * CHEAP_MARGIN if best is not None else None
+    if best is None:
+        return None
+    return best * (CHEAP_MARGIN if margin is None else margin)
 
 
 def hopeless(
@@ -825,19 +849,7 @@ async def scan_once() -> dict:
             save_report(report)
             log.info("Нет включённых стратегий — сканирование пропущено")
             return report
-        # Материализуем нужные поля: сессия закроется до асинхронных вызовов.
-        plan = [
-            {
-                "id": s.id,
-                "name": s.name,
-                "markets": [str(m).lower() for m in (s.markets or [])],
-                "collections": list(s.collections or []),
-                # Нужен дешёвой отсечке: она сравнивает с самым мягким
-                # порогом из включённых стратегий.
-                "min_roi": Decimal(s.min_roi or 0),
-            }
-            for s in strategies
-        ]
+        plan = active_plan(strategies)
 
     wanted_markets: dict[Market, set[str]] = {}
     for item in plan:

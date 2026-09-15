@@ -262,3 +262,89 @@ def set_scan_interval(value: int) -> int:
     clamped = max(SCAN_INTERVAL_MIN, min(SCAN_INTERVAL_MAX, int(value)))
     store.set(KEY_SCAN_INTERVAL, str(clamped))
     return clamped
+
+
+# ----------------------------------------------------------------------
+# Быстрый контур
+# ----------------------------------------------------------------------
+KEY_FAST = "FAST_LANE_ENABLED"
+KEY_FAST_INTERVAL = "FAST_INTERVAL_SEC"
+KEY_FAST_GAP = "FAST_MIN_GAP"
+KEY_FAST_PAIRS = "FAST_PAIRS"
+
+#: Границы частоты. Чаще пяти секунд площадки отвечают лимитами, реже
+#: минуты смысла нет — обычный проход и так ходит чаще.
+FAST_INTERVAL_MIN = 5
+FAST_INTERVAL_MAX = 120
+
+#: Сколько пар «площадка + коллекция» держать в горячем списке.
+FAST_PAIRS_MIN = 1
+FAST_PAIRS_MAX = 30
+
+
+def fast_lane_enabled() -> bool:
+    """Включён ли частый обход горячих коллекций.
+
+    По умолчанию выключен: он тратит запросы к площадкам постоянно, а
+    не раз в несколько минут, и включать такое молча нельзя.
+    """
+    return _as_bool(store.get(KEY_FAST), False)
+
+
+def set_fast_lane(value: bool, *, actor: str = "web") -> None:
+    """Включить или выключить быстрый контур."""
+    store.set(KEY_FAST, "1" if value else "0")
+    _audit(actor, "fast.enabled", value)
+
+
+def fast_interval() -> int:
+    """Как часто обходить горячий список, в секундах."""
+    raw = store.get(KEY_FAST_INTERVAL)
+    try:
+        value = int(Decimal((raw or "").strip()))
+    except (InvalidOperation, ValueError):
+        return 20
+    return max(FAST_INTERVAL_MIN, min(FAST_INTERVAL_MAX, value))
+
+
+def set_fast_interval(value: int, *, actor: str = "web") -> int:
+    """Задать частоту обхода, подрезав до разумных границ."""
+    clamped = max(FAST_INTERVAL_MIN, min(FAST_INTERVAL_MAX, int(value)))
+    store.set(KEY_FAST_INTERVAL, str(clamped))
+    _audit(actor, "fast.interval", clamped)
+    return clamped
+
+
+def fast_gap() -> Decimal:
+    """Насколько ниже известной цены лот должен быть, чтобы его проверять.
+
+    Это порог скрининга, а не решения: прошедшие его лоты идут в тот же
+    полный расчёт, что и находки обычного прохода, со всеми проверками.
+    """
+    return _as_decimal(store.get(KEY_FAST_GAP), Decimal("0.15"))
+
+
+def set_fast_gap(value: Decimal, *, actor: str = "web") -> Decimal:
+    """Задать порог скрининга."""
+    clamped = max(Decimal("0.01"), min(Decimal("0.9"), Decimal(value)))
+    store.set(KEY_FAST_GAP, format(clamped.normalize(), "f"))
+    _audit(actor, "fast.gap", clamped)
+    return clamped
+
+
+def fast_pairs() -> int:
+    """Сколько пар держать в горячем списке."""
+    raw = store.get(KEY_FAST_PAIRS)
+    try:
+        value = int(Decimal((raw or "").strip()))
+    except (InvalidOperation, ValueError):
+        return 10
+    return max(FAST_PAIRS_MIN, min(FAST_PAIRS_MAX, value))
+
+
+def set_fast_pairs(value: int, *, actor: str = "web") -> int:
+    """Задать размер горячего списка."""
+    clamped = max(FAST_PAIRS_MIN, min(FAST_PAIRS_MAX, int(value)))
+    store.set(KEY_FAST_PAIRS, str(clamped))
+    _audit(actor, "fast.pairs", clamped)
+    return clamped

@@ -211,6 +211,54 @@ async def task_fragment() -> None:
     await _guarded("fragment", run)
 
 
+async def task_fastlane() -> None:
+    """Частый обход горячих коллекций.
+
+    Смотрит только первую страницу по десятку коллекций. Решения не
+    принимает: прошедшие скрининг лоты уходят в тот же полный расчёт,
+    что и находки обычного прохода.
+    """
+
+    async def run() -> None:
+        from app.services import fastlane
+
+        report = await fastlane.sweep()
+        if report.get("candidates"):
+            log.info(
+                "Быстрый контур: %s кандидатов из %s лотов",
+                report["candidates"], report["seen"],
+            )
+
+    await _guarded("fastlane", run)
+
+
+def apply_fast_interval(scheduler) -> None:
+    """Привести расписание быстрого контура к текущим настройкам.
+
+    Включают и настраивают его из панели — другого процесса, — поэтому
+    задание пересобирается на ходу, как и обычный скан.
+    """
+    wanted = runtime.fast_interval()
+    enabled = runtime.fast_lane_enabled()
+    job = scheduler.get_job("fastlane")
+
+    if not enabled:
+        if job is not None:
+            scheduler.remove_job("fastlane")
+            log.info("Быстрый контур выключен")
+        return
+
+    if job is None:
+        scheduler.add_job(task_fastlane, "interval", seconds=wanted, id="fastlane")
+        log.info("Быстрый контур включён, интервал %s c", wanted)
+        return
+
+    current = getattr(job.trigger, "interval", None)
+    if current and int(current.total_seconds()) != wanted:
+        scheduler.reschedule_job("fastlane", trigger="interval", seconds=wanted)
+        log.info("Быстрый контур: интервал %s c", wanted)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -285,6 +333,15 @@ async def main() -> None:
         seconds=30,
         id="scan_interval",
     )
+    # Быстрый контур включают из панели, и ждать перезапуска воркера
+    # ради этого не должно быть нужно.
+    scheduler.add_job(
+        lambda: apply_fast_interval(scheduler),
+        "interval",
+        seconds=15,
+        id="fast_interval",
+    )
+    apply_fast_interval(scheduler)
     scheduler.start()
 
     # Курсы нужны сразу: без них первые же расчёты будут приблизительными.

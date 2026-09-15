@@ -192,6 +192,70 @@
   и пересобирает расписание сам.
 </p>
 
+<h2>Быстрый контур</h2>
+<p class="muted">
+  Недооценённый лот живёт секунды, а полный проход занимает минуты и
+  обходит весь рынок. Быстрый контур смотрит только <b>первую
+  страницу</b> — самые дешёвые лоты — и только по нескольким
+  коллекциям, где дешёвые входы вообще случаются.
+  <br>Решений он не принимает: лот, оказавшийся заметно дешевле
+  известного, уходит в тот же полный расчёт, что и находки обычного
+  прохода — со всеми проверками.
+  <br><b>Стоит запросов.</b> Десять коллекций раз в 20 секунд — это
+  тридцать запросов в минуту к площадкам постоянно. Поэтому по
+  умолчанию выключен.
+</p>
+{% if fast.report %}
+<div class="scan-markets muted">
+  последний обход: {{ fast.report.at }} UTC ·
+  лотов {{ fast.report.seen }} ·
+  в проверку {{ fast.report.screened }} ·
+  кандидатов {{ fast.report.candidates }} ·
+  {{ fast.report.duration_sec }} c
+  {% if fast.report.pairs %}
+  <br>список: {% for pair in fast.report.pairs %}<span class="chip">{{ pair }}</span>{% endfor %}
+  {% endif %}
+  {% for note in fast.report.notes or [] %}
+  <br><span class="warn-text">{{ note }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+<form method="post" action="/trading/fast-lane">
+  <div class="market">
+    <label class="inline">
+      <input type="checkbox" name="fast_enabled" {{ 'checked' if fast.enabled }}>
+      Включить быстрый контур
+    </label>
+  </div>
+  <div class="market">
+    <label class="cap">
+      Частота обхода
+      <input type="text" name="fast_interval" inputmode="numeric"
+             value="{{ fast.interval }}">
+      <span class="unit">c</span>
+    </label>
+    <span class="muted">допустимо {{ fast.min }}–{{ fast.max }}</span>
+  </div>
+  <div class="market">
+    <label class="cap">
+      Порог скрининга
+      <input type="text" name="fast_gap" inputmode="decimal"
+             value="{{ '%.0f'|format(fast.gap_pct|float) }}">
+      <span class="unit">%</span>
+    </label>
+    <span class="muted">насколько ниже известной цены, чтобы проверять</span>
+  </div>
+  <div class="market">
+    <label class="cap">
+      Коллекций в списке
+      <input type="text" name="fast_pairs" inputmode="numeric"
+             value="{{ fast.pairs }}">
+    </label>
+    <span class="muted">список собирается сам: по разбросу цен и недавним находкам</span>
+  </div>
+  <div class="actions"><button type="submit">Сохранить</button></div>
+</form>
+
 <h2>Перенос подарков</h2>
 <p class="muted">
   Продажа на Portals стоит около 2.5% против 20% в Telegram, поэтому
