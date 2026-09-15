@@ -198,3 +198,154 @@ def seed_default_strategy(session: Session) -> Strategy:
     if budget is not None and Decimal(budget.hard_cap) == 0:
         budget.currency = Currency.STARS
     return strategy
+
+
+# ----------------------------------------------------------------------
+# Стратегия по каналу находок
+# ----------------------------------------------------------------------
+#: Имя стратегии, которую ведёт канал находок.
+FEED_STRATEGY_NAME = "Находки канала"
+
+#: Вид стратегии.
+KIND_MANUAL = "manual"
+KIND_FEED = "feed"
+
+
+def feed_strategy(session: Session) -> Strategy | None:
+    """Стратегия, ведомая каналом находок, если она заведена."""
+    return session.query(Strategy).filter_by(kind=KIND_FEED).first()
+
+
+def ensure_feed_strategy(session: Session) -> Strategy:
+    """Создать стратегию канала, если её ещё нет.
+
+    Коллекции у неё не задаются руками: их подставляет разбор канала.
+    """
+    existing = feed_strategy(session)
+    if existing is not None:
+        return existing
+
+    strategy = create_strategy(
+        session,
+        name=FEED_STRATEGY_NAME,
+        markets=[Market.PORTALS.value, Market.TELEGRAM.value],
+        collections=[],
+    )
+    strategy.kind = KIND_FEED
+    session.flush()
+    log.info("Создана стратегия канала находок")
+    return strategy
+
+
+def set_enabled(session: Session, strategy: Strategy, enabled: bool) -> list[str]:
+    """Включить или выключить стратегию, соблюдая взаимоисключение.
+
+    Стратегия канала не работает вместе с остальными: она сужает
+    сканер до нескольких коллекций, а любая параллельная стратегия
+    вернула бы в выборку всё остальное и свела бы это к нулю.
+
+    Returns:
+        Имена стратегий, выключенных заодно.
+    """
+    strategy.is_enabled = enabled
+    if not enabled:
+        return []
+
+    if strategy.kind == KIND_FEED:
+        # Включили канал — гасим все прочие.
+        others = (
+            session.query(Strategy)
+            .filter(Strategy.id != strategy.id, Strategy.is_enabled.is_(True))
+            .all()
+        )
+    else:
+        # Включили обычную — гаснет канал, обычные друг другу не мешают.
+        others = (
+            session.query(Strategy)
+            .filter(
+                Strategy.id != strategy.id,
+                Strategy.kind == KIND_FEED,
+                Strategy.is_enabled.is_(True),
+            )
+            .all()
+        )
+
+    turned_off = []
+    for other in others:
+        other.is_enabled = False
+        turned_off.append(other.name)
+
+    if turned_off:
+        log.info(
+            "Стратегия %r включена, выключены: %s",
+            strategy.name,
+            ", ".join(turned_off),
+        )
+    return turned_off
+
+
+def refresh_feed_collections(session: Session, *, limit: int = 10) -> dict:
+    """Подставить в стратегию канала актуальные коллекции и лимит цены.
+
+    Потолок цены берётся из самой дорогой находки, но не выше лимита
+    площадки: канал показывает покупки чужого бота с чужим бюджетом, и
+    вслепую повторять их размер нельзя.
+
+    Returns:
+        Что получилось: коллекции и потолок цены.
+    """
+    from app.enums import Currency
+    from app.services import feed, marketdata, runtime
+
+    strategy = feed_strategy(session)
+    if strategy is None:
+        return {"ok": False, "detail": "стратегия канала не заведена"}
+
+    scores = feed.rank_collections(session)
+    collections = [s.collection for s in scores[:limit]]
+    if not collections:
+        return {
+            "ok": False,
+            "detail": "в канале пока нет находок — нечего подставлять",
+        }
+
+    strategy.collections = collections
+
+    # Потолок цены: самая дорогая находка среди отобранных коллекций,
+    # приведённая к Stars, но подрезанная лимитом площадки.
+    top_price = max((s.max_price for s in scores[:limit]), default=Decimal(0))
+    cap_stars = marketdata.to_stars(session, top_price, Currency.TON)
+
+    caps = []
+    for market_name in strategy.markets or []:
+        try:
+            market = Market(str(market_name).lower())
+        except ValueError:
+            continue
+        cap = runtime.trade_cap(market)
+        if cap is None:
+            continue
+        in_stars = marketdata.to_stars(session, cap, _market_currency(market))
+        if in_stars:
+            caps.append(in_stars)
+
+    if caps:
+        market_cap = min(caps)
+        cap_stars = min(cap_stars, market_cap) if cap_stars else market_cap
+
+    if cap_stars and cap_stars > 0:
+        strategy.max_price_stars = cap_stars
+
+    session.flush()
+    return {
+        "ok": True,
+        "collections": collections,
+        "max_price_stars": str(cap_stars) if cap_stars else None,
+    }
+
+
+def _market_currency(market: Market) -> "Currency":
+    """Валюта, в которой задан лимит сделки площадки."""
+    from app.enums import Currency
+
+    return Currency.STARS if market is Market.TELEGRAM else Currency.TON

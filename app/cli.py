@@ -20,6 +20,7 @@
     rotate-key  — сменить ключ шифрования секретов, перешифровав базу
     verify-key  — проверить, что секреты читаются текущим ключом
     renew-tokens— продлить токены площадок через мини-приложения
+    feed        — прочитать канал находок и показать коллекции
 """
 
 from __future__ import annotations
@@ -742,6 +743,61 @@ async def _renew_tokens() -> int:
     return 1 if failed == len(reports) else 0
 
 
+async def _feed() -> int:
+    """Прочитать канал находок и показать, что из него вышло."""
+    from app.db import session_scope
+    from app.services import feed
+    from app.services import strategy as strategy_service
+
+    if not feed.channel_ref():
+        print("✗ Канал не задан. Укажите его в панели → Настройки → "
+              "«Канал находок»", file=sys.stderr)
+        return 1
+
+    print(f"Канал: {feed.channel_ref()}")
+    report = await feed.sync()
+    if report.get("error"):
+        print(f"✗ {report['error']}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Постов с находками: {report['posts']}, "
+        f"находок: {report['finds']}, новых: {report['added']}\n"
+    )
+
+    with session_scope() as session:
+        scores = feed.rank_collections(session)
+        if not scores:
+            print("Находок за последние две недели нет.")
+            return 0
+
+        print(f"{'Коллекция':<24} {'всего':>6} {'продано':>8} {'вес':>7} {'медиана':>9}")
+        for item in scores:
+            print(
+                f"{item.collection:<24} {item.finds:>6} {item.realized:>8} "
+                f"{item.score:>7.2f} {item.median_price:>9.2f}"
+            )
+
+        target = strategy_service.feed_strategy(session)
+        if target is None:
+            print("\nСтратегия канала не заведена — включите её в панели "
+                  "на странице «Канал находок».")
+            return 0
+
+        result = strategy_service.refresh_feed_collections(session)
+        state = "включена" if target.is_enabled else "выключена"
+        print(f"\nСтратегия канала: {state}")
+        if result.get("ok"):
+            print(f"  коллекции: {', '.join(result['collections'])}")
+            print(f"  потолок цены: {result.get('max_price_stars') or '—'} Stars")
+
+    print(
+        "\nПомните: пост показывает лучшие покупки из сотен, а «Оценка» —\n"
+        "это их прикидка, не сделка. Доверять стоит столбцу «продано»."
+    )
+    return 0
+
+
 def cmd_verify_key() -> int:
     """Проверить, что все секреты в базе читаются текущим ключом."""
     from app.services import keyrotate
@@ -853,6 +909,7 @@ def main(argv: list[str] | None = None) -> int:
             "rotate-key",
             "verify-key",
             "renew-tokens",
+            "feed",
         ],
     )
     parser.add_argument(
@@ -911,6 +968,7 @@ def main(argv: list[str] | None = None) -> int:
         "scan": _scan,
         "inventory": _inventory,
         "renew-tokens": _renew_tokens,
+        "feed": _feed,
     }
     return asyncio.run(async_commands[args.command]())
 

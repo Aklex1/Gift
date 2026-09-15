@@ -72,6 +72,21 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
+def _scalar_default(column) -> object | None:
+    """Значение по умолчанию колонки, если оно простое.
+
+    Вызываемые умолчания (например, время создания) пропускаем: для
+    заполнения уже существующих строк они бессмысленны.
+    """
+    default = getattr(column, "default", None)
+    if default is None or getattr(default, "is_callable", False):
+        return None
+    value = getattr(default, "arg", None)
+    if callable(value) or value is None:
+        return None
+    return value
+
+
 def sync_columns() -> list[str]:
     """Добавить недостающие колонки в уже существующие таблицы.
 
@@ -83,7 +98,7 @@ def sync_columns() -> list[str]:
     расширение строковых полей. Данные не теряются, ничего не
     удаляется и не сужается.
     """
-    from sqlalchemy import String, inspect, text
+    from sqlalchemy import String, bindparam, inspect, text
 
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -135,6 +150,28 @@ def sync_columns() -> list[str]:
                 conn.execute(text(sql))
                 added.append(f"{table.name}.{column.name}")
                 log.info("Добавлена колонка %s.%s", table.name, column.name)
+
+                # Существующие строки получают NULL, хотя модель объявляет
+                # колонку обязательной. На новой базе такого значения быть
+                # не может, и код вправе на это рассчитывать — значит,
+                # после обновления строки нужно доводить до того же вида.
+                default = _scalar_default(column)
+                if default is not None and not column.nullable:
+                    # Параметр привязываем к типу колонки: иначе Decimal
+                    # и подобные значения драйвер принять не может.
+                    conn.execute(
+                        text(
+                            f'UPDATE "{table.name}" SET "{column.name}" = :value '
+                            f'WHERE "{column.name}" IS NULL'
+                        ).bindparams(bindparam("value", type_=column.type)),
+                        {"value": default},
+                    )
+                    log.info(
+                        "Колонка %s.%s заполнена значением по умолчанию %r",
+                        table.name,
+                        column.name,
+                        default,
+                    )
     return added
 
 

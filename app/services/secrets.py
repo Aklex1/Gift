@@ -198,6 +198,28 @@ FIELDS: tuple[SecretField, ...] = (
         hint="api.getgems.io/public-api/docs",
         group="Площадки",
     ),
+    # --- Канал находок ---
+    SecretField(
+        key="FEED_CHANNEL",
+        title="Канал находок",
+        hint="Канал, где чужой бот публикует удачные покупки "
+             "(#находка_дня). Подойдёт @имя, ссылка t.me или ссылка из "
+             "веб-клиента. Торговый аккаунт должен быть подписан на "
+             "канал — читать бот будет от его имени.",
+        secret=False,
+        group="Канал находок",
+        placeholder="https://t.me/имя_канала",
+    ),
+    SecretField(
+        key="FEED_DEPTH",
+        title="Сколько сообщений читать",
+        hint="За один проход. По умолчанию 50 — этого хватает на пару "
+             "недель ежедневных постов.",
+        secret=False,
+        group="Канал находок",
+        placeholder="50",
+    ),
+
     # --- TON ---
     SecretField(
         key="TONAPI_KEY",

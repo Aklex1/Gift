@@ -814,6 +814,115 @@ async def strategies_page(
     )
 
 
+@app.get("/feed", response_class=HTMLResponse)
+async def feed_page(
+    request: Request, saved: str = "", _: str = Depends(require_auth)
+) -> HTMLResponse:
+    """Канал находок: что удалось вычитать и куда это пошло."""
+    from app.models import FeedFind
+    from app.services import feed
+    from app.services import strategy as strategy_service
+
+    with session_scope() as session:
+        scores = [s.as_dict() for s in feed.rank_collections(session)]
+        recent = [
+            {
+                "collection": f.collection,
+                "number": f.number,
+                "price": f.price,
+                "value": f.value,
+                "realized": f.realized,
+                "posted_at": f.posted_at,
+            }
+            for f in session.query(FeedFind)
+            .order_by(FeedFind.posted_at.desc(), FeedFind.id.desc())
+            .limit(30)
+            .all()
+        ]
+        target = strategy_service.feed_strategy(session)
+        strategy = (
+            {
+                "id": target.id,
+                "name": target.name,
+                "enabled": target.is_enabled,
+                "collections": target.collections or [],
+                "max_price": target.max_price_stars,
+            }
+            if target
+            else None
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="feed.html",
+        context={
+            "channel": feed.channel_ref(),
+            "last_sync": feed.last_sync(),
+            "scores": scores,
+            "recent": recent,
+            "strategy": strategy,
+            "saved": saved,
+        },
+    )
+
+
+@app.post("/feed/sync")
+async def feed_sync(_: str = Depends(require_auth)) -> RedirectResponse:
+    """Прочитать канал прямо сейчас."""
+    from app.services import feed
+    from app.services import strategy as strategy_service
+
+    if not feed.channel_ref():
+        return RedirectResponse(
+            "/feed?saved=Сначала укажите канал в «Настройках»", status_code=303
+        )
+
+    report = await feed.sync()
+    if report.get("error"):
+        return RedirectResponse(f"/feed?saved={report['error']}", status_code=303)
+
+    with session_scope() as session:
+        if strategy_service.feed_strategy(session) is not None:
+            strategy_service.refresh_feed_collections(session)
+
+    return RedirectResponse(
+        f"/feed?saved=Постов {report['posts']}, находок {report['finds']}, "
+        f"новых {report['added']}",
+        status_code=303,
+    )
+
+
+@app.post("/feed/strategy")
+async def feed_strategy_toggle(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Включить или выключить стратегию канала."""
+    from app.models import AuditLog
+    from app.services import strategy as strategy_service
+
+    form = await request.form()
+    wanted = bool(form.get("enabled"))
+
+    with session_scope() as session:
+        target = strategy_service.ensure_feed_strategy(session)
+        turned_off = strategy_service.set_enabled(session, target, wanted)
+        if wanted:
+            strategy_service.refresh_feed_collections(session)
+        session.add(
+            AuditLog(
+                actor="web",
+                action="strategy.feed",
+                target=target.name,
+                payload={"enabled": wanted, "turned_off": turned_off},
+            )
+        )
+
+    note = "Стратегия канала включена" if wanted else "Стратегия канала выключена"
+    if turned_off:
+        note += f"; выключено: {', '.join(turned_off)}"
+    return RedirectResponse(f"/feed?saved={note}", status_code=303)
+
+
 @app.post("/strategies/new")
 async def strategies_new(
     request: Request, _: str = Depends(require_auth)
@@ -840,6 +949,7 @@ async def strategies_save(
     """Сохранить параметры стратегии."""
     from app.enums import Confidence, TradeMode
     from app.models import Budget, Strategy
+    from app.services import strategy as strategy_service
 
     form = await request.form()
 
@@ -863,7 +973,7 @@ async def strategies_save(
         if item is None:
             return RedirectResponse("/strategies", status_code=303)
 
-        item.is_enabled = bool(form.get("enabled"))
+        wanted = bool(form.get("enabled"))
         raw_mode = str(form.get("mode") or "").strip().lower()
         if raw_mode in {m.value for m in TradeMode}:
             item.mode = TradeMode(raw_mode)
@@ -921,7 +1031,7 @@ async def strategies_save(
                 budget.currency = Currency(raw_currency)
 
         # Включение при нулевом бюджете — частая ошибка: покупать не на что.
-        if item.is_enabled and (budget is None or Decimal(budget.hard_cap) <= 0):
+        if wanted and (budget is None or Decimal(budget.hard_cap) <= 0):
             item.is_enabled = False
             name = item.name
             session.add(
@@ -933,19 +1043,29 @@ async def strategies_save(
                 status_code=303,
             )
 
+        # Взаимоисключение: стратегия канала сужает сканер до нескольких
+        # коллекций, и параллельная стратегия вернула бы в выборку всё
+        # остальное, сведя сужение к нулю.
+        turned_off = strategy_service.set_enabled(session, item, wanted)
+
         name = item.name
         session.add(
             AuditLog(
                 actor="web",
                 action="strategy.save",
                 target=name,
-                payload={"enabled": item.is_enabled, "min_roi": str(item.min_roi)},
+                payload={
+                    "enabled": item.is_enabled,
+                    "min_roi": str(item.min_roi),
+                    "turned_off": turned_off,
+                },
             )
         )
 
-    return RedirectResponse(
-        f"/strategies?saved=Стратегия {name} сохранена", status_code=303
-    )
+    note = f"Стратегия {name} сохранена"
+    if turned_off:
+        note += f"; выключено: {', '.join(turned_off)}"
+    return RedirectResponse(f"/strategies?saved={note}", status_code=303)
 
 
 @app.post("/strategies/{strategy_id}/delete")

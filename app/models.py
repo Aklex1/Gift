@@ -255,6 +255,42 @@ class FeeSchedule(Base, TimestampMixin):
 
 # ----------------------------------------------------------------------
 # Возможности адаптеров
+class FeedFind(Base):
+    """Находка из чужого канала: что купили, почём и чем кончилось.
+
+    Хранится ради одного — понять, в каких коллекциях недооценённые
+    лоты появляются на практике. Это витрина чужого бота, а не отчёт:
+    доказательством служит только признак `realized`, остальное —
+    их собственная оценка.
+    """
+
+    __tablename__ = "feed_finds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: Идентификатор сообщения в канале — защита от повторного учёта.
+    message_id: Mapped[int] = mapped_column(Integer, index=True)
+    posted_at: Mapped[dt.datetime] = mapped_column(DateTime, index=True)
+
+    collection: Mapped[str] = mapped_column(String(128), index=True)
+    number: Mapped[int | None] = mapped_column(Integer)
+
+    #: Цена покупки и заявленная стоимость — в GRAM, он же TON.
+    price: Mapped[Decimal] = mapped_column(Money)
+    value: Mapped[Decimal] = mapped_column(Money)
+    currency: Mapped[Currency] = mapped_column(EnumStr(Currency), default=Currency.TON)
+
+    #: True — подарок реально продан; False — только их оценка.
+    realized: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id", "collection", "number", name="uq_feed_find"
+        ),
+    )
+
+
 # ----------------------------------------------------------------------
 class AdapterCapability(Base, TimestampMixin):
     """Матрица возможностей площадки — контракт из раздела 6 ТЗ."""
@@ -355,6 +391,10 @@ class Strategy(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    #: manual — коллекции задаёт человек; feed — их подставляет канал
+    #: находок. Стратегия с feed не работает вместе с остальными.
+    kind: Mapped[str] = mapped_column(String(16), default="manual", index=True)
 
     #: Режим исполнения именно этой стратегии.
     mode: Mapped[TradeMode] = mapped_column(EnumStr(TradeMode), default=TradeMode.SAFE)

@@ -154,6 +154,41 @@ async def task_tokens() -> None:
     await _guarded("tokens", run)
 
 
+async def task_feed() -> None:
+    """Прочитать канал находок и обновить коллекции стратегии.
+
+    Канал показывает, в каких коллекциях недооценённые лоты
+    появляются на практике. Сканер ограничен по пропускной
+    способности, и сузить его до десятка коллекций — значит
+    осматривать каждую за секунды, а не раз в час.
+    """
+
+    async def run() -> None:
+        from app.services import feed, strategy as strategy_service
+
+        if not feed.channel_ref():
+            return
+
+        report = await feed.sync()
+        if report.get("error"):
+            return
+
+        with session_scope() as session:
+            target = strategy_service.feed_strategy(session)
+            if target is None or not target.is_enabled:
+                return
+            result = strategy_service.refresh_feed_collections(session)
+
+        if result.get("ok"):
+            log.info(
+                "Коллекции канала: %s (потолок %s Stars)",
+                ", ".join(result["collections"]),
+                result.get("max_price_stars") or "—",
+            )
+
+    await _guarded("feed", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -193,6 +228,8 @@ async def main() -> None:
     # Проверяем возраст токенов чаще, чем они живут: сама проверка
     # дешёвая, запрос к Telegram уходит только при реальной надобности.
     scheduler.add_job(task_tokens, "interval", seconds=1800, id="tokens")
+    # Канал публикует раз в сутки — чаще получаса смотреть незачем.
+    scheduler.add_job(task_feed, "interval", seconds=1800, id="feed")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     scheduler.start()
 

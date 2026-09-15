@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Канал находок — Gift{% endblock %}
+{% block content %}
+<h1>Канал находок</h1>
+
+{% if saved %}
+<div class="banner ok"><div>{{ saved }}</div></div>
+{% endif %}
+
+{% if not channel %}
+<div class="banner danger">
+  <div>Канал не указан. Задайте его в
+    <a href="/settings">Настройках</a> → «Канал находок».
+    Торговый аккаунт должен быть подписан на канал.</div>
+</div>
+{% else %}
+<div class="scan-note muted">
+  Канал: <code>{{ channel }}</code>.
+  Последнее чтение: {{ last_sync or 'ещё не читали' }}.
+</div>
+{% endif %}
+
+<p class="muted">
+  Бот читает посты <code>#находка_дня</code> и вытаскивает из них одно:
+  <b>в каких коллекциях недооценённые лоты появляются на практике</b>.
+  Сканер ограничен по скорости, и десяток коллекций он осматривает за
+  секунды, а сотню — за час.
+</p>
+<p class="muted">
+  Чего эти посты <b>не</b> доказывают: там показаны лучшие 3 покупки из
+  сотен, про убытки не пишут, а «Оценка» — это прикидка чужого бота,
+  такая же нереализованная, как наша собственная. Поэтому коллекции
+  ранжируются по <b>подтверждённым продажам</b>, а «Оценка» идёт с
+  понижающим весом. Решение по каждому лоту всё равно принимает обычная
+  оценка сделки.
+</p>
+
+<form method="post" action="/feed/sync">
+  <div class="actions"><button type="submit">Прочитать канал сейчас</button></div>
+</form>
+
+<h2>Стратегия</h2>
+<form method="post" action="/feed/strategy">
+  <div class="market">
+    <label class="cap">
+      <input type="checkbox" name="enabled"
+             {{ 'checked' if strategy and strategy.enabled }}>
+      Торговать по коллекциям из канала
+    </label>
+  </div>
+  <p class="muted">
+    Эта стратегия <b>не работает вместе с другими</b>: включение погасит
+    все остальные, а включение любой другой погасит её. Иначе сужение
+    сканера теряет смысл — параллельная стратегия вернёт в выборку всё
+    остальное.
+  </p>
+  <div class="actions"><button type="submit">Применить</button></div>
+</form>
+
+{% if strategy and strategy.collections %}
+<div class="scan-note">
+  Сейчас в сканере: <b>{{ strategy.collections|join(', ') }}</b><br>
+  <span class="muted">Потолок цены:
+    {% if strategy.max_price %}{{ '%.0f'|format(strategy.max_price|float) }} Stars
+    {% else %}не задан{% endif %}
+    — берётся из самой дорогой находки, но не выше лимита площадки.</span>
+</div>
+{% endif %}
+
+<h2>Коллекции по вкладу</h2>
+{% if scores %}
+<table>
+  <tr>
+    <th>Коллекция</th><th class="num">Находок</th>
+    <th class="num">Из них продано</th><th class="num">Вес</th>
+    <th class="num">Медианная цена</th><th class="num">Максимум</th>
+  </tr>
+  {% for s in scores %}
+  <tr>
+    <td>{{ s.collection }}</td>
+    <td class="num">{{ s.finds }}</td>
+    <td class="num">{% if s.realized %}<b>{{ s.realized }}</b>{% else %}
+      <span class="muted">0</span>{% endif %}</td>
+    <td class="num">{{ s.score }}</td>
+    <td class="num">{{ s.median_price }}</td>
+    <td class="num">{{ s.max_price }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="muted">
+  «Вес» — сумма маржи по находкам за две недели. Подтверждённая продажа
+  считается полностью, чужая оценка — с коэффициентом 0.3. Коллекция без
+  единой продажи может держаться высоко только за счёт их прикидок —
+  смотрите на столбец «Из них продано».
+</p>
+{% else %}
+<div class="scan-note muted">
+  Находок пока нет. Нажмите «Прочитать канал сейчас» — если канал указан
+  и аккаунт на него подписан, посты появятся здесь.
+</div>
+{% endif %}
+
+<h2>Последние находки</h2>
+{% if recent %}
+<table>
+  <tr>
+    <th>Когда</th><th>Подарок</th><th class="num">Куплено за</th>
+    <th class="num">Заявлено</th><th>Исход</th>
+  </tr>
+  {% for f in recent %}
+  <tr>
+    <td class="muted">{{ f.posted_at.strftime('%d.%m %H:%M') if f.posted_at else '—' }}</td>
+    <td>{{ f.collection }}{% if f.number %} #{{ f.number }}{% endif %}</td>
+    <td class="num">{{ '%.2f'|format(f.price|float) }} GRAM</td>
+    <td class="num">{{ '%.2f'|format(f.value|float) }} GRAM</td>
+    <td>{% if f.realized %}<b>продано</b>{% else %}
+      <span class="muted">их оценка</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="scan-note muted">Пока пусто.</div>
+{% endif %}
+{% endblock %}
