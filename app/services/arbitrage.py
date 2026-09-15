@@ -32,7 +32,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.adapters.base import ListingDTO
-from app.enums import Currency, Market
+from app.enums import Currency, Market, display_currency
 from app.services import marketdata, store, valuation
 
 log = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ class Spread:
             "kind": self.kind,
             "buy_market": self.buy.market.value,
             "buy_price_stars": str(self.buy.price_stars.quantize(Decimal("1"))),
-            "buy_price_native": f"{self.buy.price_native} {self.buy.currency.value}",
+            "buy_price_native": f"{self.buy.price_native} {display_currency(self.buy.currency)}",
             "sell_market": self.sell.market.value,
             "sell_price_stars": str(self.sell.price_stars.quantize(Decimal("1"))),
             "net_profit_stars": str(self.net_profit.quantize(Decimal("1"))),
@@ -215,7 +215,7 @@ def evaluate_pair(
 
     reasons = [
         f"покупка на {buy.market.value}: {buy.price_native} "
-        f"{buy.currency.value} ({buy.price_stars:.0f} Stars)",
+        f"{display_currency(buy.currency)} ({buy.price_stars:.0f} Stars)",
         f"продажа на {sell.market.value} по текущему минимуму "
         f"{sell.price_stars:.0f} Stars, на руки {net_proceeds:.0f} "
         f"(комиссия {sell_fees.total_sale_rate:.0%})",

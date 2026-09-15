@@ -242,10 +242,11 @@ def last_report() -> dict | None:
 
 def snapshot(session) -> dict:
     """Текущие курсы для интерфейса."""
+    # Названия пар — для человека, поэтому TON показывается как GRAM.
     pairs = [
-        (Currency.TON, Currency.STARS, "TON → Stars"),
-        (Currency.TON, Currency.USD, "TON → USD"),
-        (Currency.TON, Currency.RUB, "TON → RUB"),
+        (Currency.TON, Currency.STARS, "GRAM → Stars"),
+        (Currency.TON, Currency.USD, "GRAM → USD"),
+        (Currency.TON, Currency.RUB, "GRAM → RUB"),
         (Currency.STARS, Currency.USD, "Stars → USD"),
     ]
     out = []

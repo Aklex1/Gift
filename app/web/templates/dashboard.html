@@ -19,7 +19,7 @@
     <span class="value">{{ fmt(total_stars) }} ★</span>
   </div>
   <div class="card">
-    <span class="label">Баланс TON</span>
+    <span class="label">Баланс GRAM</span>
     <span class="value">{{ amount(total_ton) }}</span>
   </div>
   <div class="card">
@@ -65,7 +65,7 @@
     <td>{{ m.title }}</td>
     <td>
       {% if m.amount is not none %}
-        <b>{{ amount(m.amount) }}</b> {{ m.currency }}
+        <b>{{ amount(m.amount) }}</b> {{ m.currency | cur }}
       {% elif m.error %}
         <span class="neg">{{ m.error }}</span>
         {% if m.url %}<div class="muted" style="font-size:12px">{{ m.url }}</div>{% endif %}
@@ -82,7 +82,7 @@
 
 <h2>Аккаунты</h2>
 <table>
-  <tr><th>Аккаунт</th><th>Stars</th><th>TON</th><th>Состояние</th><th>Обновлено</th></tr>
+  <tr><th>Аккаунт</th><th>Stars</th><th>GRAM</th><th>Состояние</th><th>Обновлено</th></tr>
   {% for a in accounts %}
   <tr>
     <td>{{ a.name }}</td>

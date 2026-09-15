@@ -239,7 +239,9 @@ def test_spread_report_is_readable(session):
 
     assert data["buy_market"] == "portals"
     assert data["sell_market"] == "mrkt"
-    assert "TON" in data["buy_price_native"]
+    # Человеку валюта показывается под нынешним именем: TON внутри — GRAM снаружи.
+    assert "GRAM" in data["buy_price_native"]
+    assert "TON" not in data["buy_price_native"]
     assert data["net_roi"].endswith("%")
     assert any("не атомарна" in r for r in data["reasons"])
 

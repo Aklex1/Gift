@@ -39,7 +39,7 @@
       <span class="value">{{ fmt(a.stars) }} ★</span>
     </div>
     <div class="bal">
-      <span class="label">TON</span>
+      <span class="label">GRAM</span>
       <span class="value">{{ amount(a.ton) }}</span>
     </div>
     <div class="bal">
@@ -53,7 +53,7 @@
   <div class="account-meta muted">
     api_id {{ a.api_id }} · сессия <code>{{ a.session_name }}</code>
     {% if a.phone %} · {{ a.phone }}{% endif %}
-    {% if a.ton_address %}<br>кошелёк TON: <code>{{ a.ton_address }}</code>{% endif %}
+    {% if a.ton_address %}<br>кошелёк GRAM: <code>{{ a.ton_address }}</code>{% endif %}
   </div>
 
   {% if not a.authorized %}
@@ -115,7 +115,7 @@
              placeholder="+79991234567"></td>
     </tr>
     <tr>
-      <td class="skey"><label for="a-ton">Кошелёк TON</label>
+      <td class="skey"><label for="a-ton">Кошелёк GRAM</label>
         <div class="muted hint">Необязательно, только для показа баланса.</div></td>
       <td class="sval"><input type="text" id="a-ton" name="ton_address"
              placeholder="UQ..."></td>

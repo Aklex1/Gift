@@ -57,14 +57,14 @@
         Лимит одной сделки
         <input type="text" name="cap__{{ m.key }}" inputmode="decimal"
                value="{{ m.cap if m.cap else '' }}" placeholder="не задан">
-        <span class="unit">{{ m.currency }}</span>
+        <span class="unit">{{ m.currency | cur }}</span>
       </label>
 
       <label class="cap">
         Лимит за сутки
         <input type="text" name="daily__{{ m.key }}" inputmode="decimal"
                value="{{ m.daily.limit if m.daily.limit else '' }}" placeholder="не задан">
-        <span class="unit">{{ m.currency }}</span>
+        <span class="unit">{{ m.currency | cur }}</span>
       </label>
 
       {% if m.daily.limit %}
@@ -186,7 +186,7 @@
       Стоимость переноса подарка
       <input type="text" name="transfer_ton" inputmode="decimal"
              value="{{ arb.transfer_ton }}">
-      <span class="unit">TON</span>
+      <span class="unit">GRAM</span>
     </label>
   </div>
   <div class="actions"><button type="submit">Сохранить</button></div>
@@ -221,7 +221,7 @@
       <span class="unit">%</span>
     </label>
     <div class="market-state muted">
-      Курс Stars к TON выводится из курса TON и официальной цены звёзд
+      Курс Stars к GRAM выводится из курса GRAM и официальной цены звёзд
       в Telegram. Спред занижает курс, чтобы сделка не выглядела
       выгоднее, чем есть. Без реального курса кросс-валютные расчёты
       приблизительны.

@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from app.adapters.base import Capability
 from app.adapters.registry import get_adapter
-from app.enums import Market
+from app.enums import Market, display_currency
 from app.services import runtime, store
 
 log = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def refresh(markets: tuple[Market, ...] = WITH_WALLET) -> dict:
             total = sum((Decimal(r.amount) for r in rows), Decimal(0))
             currency = rows[0].currency.value if rows else adapter.native_currency.value
             record.update(amount=str(total), currency=currency)
-            report[market.value] = f"{total} {currency}"
+            report[market.value] = f"{total} {display_currency(currency)}"
         except asyncio.TimeoutError:
             record["error"] = f"площадка не ответила за {TIMEOUT:.0f} c"
             report[market.value] = record["error"]

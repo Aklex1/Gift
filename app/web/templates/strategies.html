@@ -22,7 +22,7 @@
     </label>
     <span class="muted">
       открыто позиций: {{ s.open_positions }} / {{ s.max_open_positions }} ·
-      бюджет {{ amount(s.budget_cap) }} {{ s.budget_currency }}
+      бюджет {{ amount(s.budget_cap) }} {{ s.budget_currency | cur }}
       (свободно {{ amount(s.budget_available) }})
     </span>
   </div>
@@ -117,13 +117,13 @@
   <table class="settings">
     <tr>
       <td class="skey"><label>Бюджет</label>
-        <div class="muted hint">Жёсткий потолок вложений. Для Portals и MRKT — в TON.</div></td>
+        <div class="muted hint">Жёсткий потолок вложений. Для Portals и MRKT — в GRAM.</div></td>
       <td class="sval">
         <input type="text" name="budget_cap" class="narrow"
                value="{{ amount(s.budget_cap) }}">
         <select name="budget_currency">
           <option value="STARS" {{ 'selected' if s.budget_currency == 'STARS' }}>STARS</option>
-          <option value="TON" {{ 'selected' if s.budget_currency == 'TON' }}>TON</option>
+          <option value="TON" {{ 'selected' if s.budget_currency == 'TON' }}>GRAM</option>
         </select></td>
     </tr>
     <tr>

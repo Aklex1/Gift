@@ -67,7 +67,7 @@ def validate(key: str, value: str) -> str:
         if _TON_FRIENDLY.match(cleaned) or _TON_RAW.match(cleaned):
             return ""
         return (
-            "не похоже на адрес TON. Ожидается 48 символов, начинается "
+            "не похоже на адрес GRAM (TON). Ожидается 48 символов, начинается "
             "с UQ или EQ (например UQAbc…), либо сырая форма 0:<64 hex>"
         )
 
@@ -224,18 +224,19 @@ FIELDS: tuple[SecretField, ...] = (
     SecretField(
         key="TONAPI_KEY",
         title="TonAPI: ключ",
-        hint="tonconsole.com → TON API. Нужен только для чтения баланса.",
-        group="TON (только чтение)",
+        hint="tonconsole.com → раздел «TON API» (сервис сохранил прежнее "
+             "название). Нужен только для чтения баланса GRAM.",
+        group="GRAM (только чтение)",
     ),
     SecretField(
         key="TON_WALLET_ADDRESS",
-        title="Адрес кошелька TON",
-        hint="Только для наблюдения за балансом: бот не тратит TON и не "
+        title="Адрес кошелька GRAM",
+        hint="Только для наблюдения за балансом: бот не тратит GRAM и не "
              "хранит приватный ключ. Скопируйте адрес из @wallet или "
              "Tonkeeper. Для торговли подарками в Telegram нужны Stars, "
-             "а не TON — это поле можно оставить пустым.",
+             "а не GRAM — это поле можно оставить пустым.",
         secret=False,
-        group="TON (только чтение)",
+        group="GRAM (только чтение)",
         placeholder="UQAbc...",
         check="ton_address",
     ),

@@ -23,7 +23,7 @@ from sqlalchemy import func
 from app.adapters.registry import capability_matrix, probe_all
 from app.config import settings
 from app.db import session_scope
-from app.enums import Market, TradeMode
+from app.enums import Market, TradeMode, display_currency
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Intent, Position, Strategy, utcnow
 from app.services import budget as budget_service
@@ -35,6 +35,11 @@ log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# Валюта показывается человеку под своим нынешним именем: TON внутри —
+# GRAM в интерфейсе. Фильтром, а не правкой каждой подстановки, чтобы
+# название жило в одном месте.
+templates.env.filters["cur"] = display_currency
 security = HTTPBasic()
 
 app = FastAPI(title="Gift — панель управления", docs_url=None, redoc_url=None)

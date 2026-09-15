@@ -39,6 +39,7 @@ from app.enums import (
     Market,
     PositionStatus,
     TradeMode,
+    display_currency,
 )
 from app.models import AuditLog, Candidate, Gift, Intent, Position, Strategy, Transaction, utcnow
 from app.services import accounts as accounts_service
@@ -183,7 +184,7 @@ async def execute_buy(
             return {
                 "ok": False,
                 "detail": (
-                    f"цена {native_price} {native_currency.value} выше лимита "
+                    f"цена {native_price} {display_currency(native_currency)} выше лимита "
                     f"{cap} для {market.value}"
                 ),
             }
@@ -253,13 +254,14 @@ async def execute_buy(
                 session,
                 intent,
                 IntentStatus.CANCELLED,
-                error=f"нет курса {native_currency.value}->{budget_currency.value}",
+                error=f"нет курса {display_currency(native_currency)}"
+                      f"->{display_currency(budget_currency)}",
             )
             return {
                 "ok": False,
                 "detail": (
-                    f"не удалось пересчитать цену из {native_currency.value} "
-                    f"в валюту бюджета {budget_currency.value}"
+                    f"не удалось пересчитать цену из {display_currency(native_currency)} "
+                    f"в валюту бюджета {display_currency(budget_currency)}"
                 ),
             }
         try:
@@ -398,7 +400,7 @@ async def execute_buy(
 
         result_payload = {
             "ok": True,
-            "detail": f"куплено за {executed} {executed_currency.value}",
+            "detail": f"куплено за {executed} {display_currency(executed_currency)}",
             "intent_id": intent_id,
             "position_id": position.id,
             "_notify": {
@@ -501,7 +503,7 @@ def _create_position(
         position.id,
         gift_id,
         price,
-        currency.value,
+        display_currency(currency),
     )
     return position
 
@@ -599,7 +601,10 @@ async def execute_list(
             position.listed_at = utcnow()
             position.last_reprice_at = utcnow()
             currency = get_adapter(market).native_currency
-            return {"ok": True, "detail": f"выставлено за {price} {currency.value}"}
+            return {
+                "ok": True,
+                "detail": f"выставлено за {price} {display_currency(currency)}",
+            }
 
         saga.transition(session, intent, IntentStatus.FAILED, error=result.detail)
         return {"ok": False, "detail": result.detail or "не удалось выставить"}

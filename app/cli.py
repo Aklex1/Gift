@@ -7,7 +7,7 @@
                   (`login --account второй` для конкретного аккаунта)
     accounts    — список аккаунтов и их балансы
     whoami      — показать, под каким аккаунтом работает сессия
-    balance     — балансы Stars/TON
+    balance     — балансы Stars/GRAM
     probe       — живая проверка доступности площадок
     scan        — разовый проход сканера
     inventory   — сверка портфеля с инвентарём
@@ -31,6 +31,7 @@ import sys
 from decimal import Decimal
 
 from app.config import settings
+from app.enums import display_currency
 
 
 def cmd_gen_key() -> int:
@@ -204,7 +205,7 @@ async def _accounts() -> int:
             from app.services.gifts import format_amount, format_stars
 
             print(f"  Stars    : {format_stars(account.stars_balance)} ★")
-            print(f"  TON      : {format_amount(account.ton_balance)}")
+            print(f"  GRAM     : {format_amount(account.ton_balance)}")
             if state:
                 print(f"  Состояние: {', '.join(state)}")
             if account.last_error:
@@ -231,7 +232,7 @@ async def _balance() -> int:
     """Показать балансы с сырыми значениями от Telegram.
 
     Сырые числа нужны, чтобы отличить настоящий ноль от ошибки
-    пересчёта: Stars приходят целыми с нанодолями, TON — в нанотонах.
+    пересчёта: Stars приходят целыми с нанодолями, GRAM — в нанотонах.
     """
     from telethon.tl import functions, types
 
@@ -255,7 +256,7 @@ async def _balance() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"  недоступно: {type(exc).__name__}: {exc}")
 
-    print("\n--- TON внутри Telegram (payments.getStarsStatus ton=True) ---")
+    print("\n--- GRAM внутри Telegram (payments.getStarsStatus ton=True) ---")
     try:
         res = await adapter.gateway.call(
             functions.payments.GetStarsStatusRequest(
@@ -267,19 +268,19 @@ async def _balance() -> int:
         print(f"  сырой ответ : {raw}")
         if amount is not None:
             print(f"  нанотоны    : {amount}")
-            print(f"  в TON       : {Decimal(amount) / Decimal(10) ** 9}")
+            print(f"  в GRAM      : {Decimal(amount) / Decimal(10) ** 9}")
     except Exception as exc:  # noqa: BLE001
         print(f"  недоступно: {type(exc).__name__}: {exc}")
 
     address = secrets.resolve("TON_WALLET_ADDRESS", settings.ton_wallet_address)
-    print("\n--- Внешний кошелёк TON ---")
+    print("\n--- Внешний кошелёк GRAM ---")
     if not address:
-        print("  адрес не задан (панель → Настройки → Адрес кошелька TON)")
+        print("  адрес не задан (панель → Настройки → Адрес кошелька GRAM)")
     else:
         ton = TonClient()
         try:
             print(f"  {address}")
-            print(f"  баланс: {await ton.balance(address)} TON")
+            print(f"  баланс: {await ton.balance(address)} GRAM")
         except Exception as exc:  # noqa: BLE001
             print(f"  недоступно: {type(exc).__name__}: {exc}")
         finally:
@@ -288,9 +289,9 @@ async def _balance() -> int:
     print(
         "\nЕсли здесь нули, а деньги вы видите в Telegram — проверьте, где именно:\n"
         "  • Stars          — Настройки → Мой профиль → Звёзды\n"
-        "  • TON за подарки — приходит сюда же, в getStarsStatus(ton=True)\n"
+        "  • GRAM за подарки — приходит сюда же, в getStarsStatus(ton=True)\n"
         "  • @wallet        — ОТДЕЛЬНЫЙ сервис, боту не виден.\n"
-        "                     Рубли и TON в @wallet сюда не попадают."
+        "                     Рубли и GRAM в @wallet сюда не попадают."
     )
     return 0
 
@@ -430,7 +431,10 @@ async def _contract(market_name: str, make_template: bool) -> int:
               f"({market.value.upper()}_MAX_TRADE_TON)")
         problems += 1
     else:
-        print(f"✓ Лимит одной сделки: {cap} {adapter.native_currency.value}")
+        print(
+            f"✓ Лимит одной сделки: {cap} "
+            f"{display_currency(adapter.native_currency)}"
+        )
 
     auto_on = market.value in cfg.auto_markets and cfg.allow_experimental_auto
     print(f"  Автономный режим: {'разрешён' if auto_on else 'выключен'}")

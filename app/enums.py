@@ -129,12 +129,50 @@ class IntentKind(ValueStr):
 
 
 class Currency(ValueStr):
-    """Расчётные валюты. Курсы фиксируются снапшотом с таймстемпом."""
+    """Расчётные валюты. Курсы фиксируются снапшотом с таймстемпом.
+
+    Значения — то, что лежит в базе и уходит во внешние API, и менять
+    их нельзя: TonAPI и площадки говорят «TON», и каждая уже
+    сохранённая строка тоже. Человеку же показывается ``display``.
+    """
 
     STARS = "STARS"                # Telegram Stars
-    TON = "TON"
+    TON = "TON"                    # в интерфейсе — GRAM, см. DISPLAY_NAMES
     USD = "USD"
     RUB = "RUB"
+
+    @property
+    def display(self) -> str:
+        """Название валюты для человека."""
+        return DISPLAY_NAMES.get(self, self.value)
+
+
+#: Как валюта называется в интерфейсе.
+#:
+#: 15 июня 2026 сеть переименовала токен: TON стал GRAM, курс 1:1,
+#: балансы и цены не изменились. Площадки, кошельки и посты говорят
+#: «GRAM», поэтому и бот показывает GRAM — но внутри и в запросах к
+#: API остаётся TON, иначе пришлось бы переписывать каждую строку в
+#: базе и ломать совместимость с внешними сервисами.
+DISPLAY_NAMES: dict[Currency, str] = {
+    Currency.TON: "GRAM",
+}
+
+
+def display_currency(value: "Currency | str | None") -> str:
+    """Название валюты для человека, из чего угодно.
+
+    Принимает и Currency, и строку из базы, и None — в шаблонах и
+    логах встречается всё перечисленное.
+    """
+    if value is None:
+        return "—"
+    if isinstance(value, Currency):
+        return value.display
+    try:
+        return Currency(str(value).upper()).display
+    except ValueError:
+        return str(value)
 
 
 class PositionStatus(ValueStr):

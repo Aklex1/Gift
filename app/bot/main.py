@@ -20,7 +20,13 @@ from app.adapters.registry import capability_matrix, get_adapter
 from app.bot import keyboards as kb
 from app.config import settings
 from app.db import session_scope
-from app.enums import Confidence, Market, PositionStatus, TradeMode
+from app.enums import (
+    Confidence,
+    Market,
+    PositionStatus,
+    TradeMode,
+    display_currency,
+)
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Position, Strategy, utcnow
 from app.services import budget as budget_service
@@ -375,7 +381,7 @@ async def cmd_balance(message: Message) -> None:
             lines.append(
                 f"<b>{account.name}</b>{state}\n"
                 f"   Stars: {gifts_service.format_stars(account.stars_balance)} ★\n"
-                f"   TON:   {format_amount(account.ton_balance)}"
+                f"   GRAM:  {format_amount(account.ton_balance)}"
             )
 
     lines.append("")
@@ -387,7 +393,7 @@ async def cmd_balance(message: Message) -> None:
         if item["amount"] is not None:
             lines.append(
                 f"<b>{item['title']}</b>: {format_amount(item['amount'])} "
-                f"{item['currency']}"
+                f"{display_currency(item['currency'])}"
             )
         else:
             reason = item.get("error") or "не опрашивался"
@@ -401,7 +407,7 @@ async def cmd_balance(message: Message) -> None:
             lines.append("— бюджетов нет")
         for budget in budgets:
             snap = budget_service.snapshot(session, budget.id)
-            currency = snap["currency"]
+            currency = display_currency(snap["currency"])
             lines.append(
                 f"{snap['name']}: потолок {format_amount(snap['hard_cap'])} {currency}, "
                 f"свободно {format_amount(snap['available'])}, "
