@@ -1446,6 +1446,55 @@ async def _fast() -> int:
     return 0
 
 
+async def _spread(collection: str | None) -> int:
+    """Показать, где одна и та же модель стоит дороже и где дешевле.
+
+    Механика, которой не нужен прогноз: обе цены названы рынком.
+    Ошибиться можно только в комиссиях и в переносе подарка.
+    """
+    from app.db import init_db, session_scope
+    from app.enums import display_currency
+    from app.services import venues
+
+    if not collection:
+        print("Укажите коллекцию: gift-cli spread --collection «Light Sword»",
+              file=sys.stderr)
+        return 1
+
+    init_db()
+    with session_scope() as session:
+        table, notes = await venues.quotes_for(session, collection)
+        rows = venues.spreads(table)
+
+    for note in notes:
+        print(f"  ✗ {note}")
+
+    if not table:
+        print("\nНи одна площадка не вернула лотов с моделями.")
+        return 0
+
+    markets = sorted({m.value for per in table.values() for m in per})
+    print(f"\n=== {collection}: цены по моделям ===")
+    print(f"площадки в сравнении: {', '.join(markets)}")
+
+    if not rows:
+        print("\nМодели нашлись только на одной площадке — сравнивать не с чем.")
+        print("Подключите ещё площадку: панель → «Настройки» → токены.")
+        return 0
+
+    print(f"\n{'модель':<20} {'купить':>22} {'продать':>22} {'разница':>9}")
+    for row in rows[:20]:
+        buy, sell = row["buy"], row["sell"]
+        left = f"{buy.price} {display_currency(buy.currency)} ({row['buy_market'].value})"
+        right = f"{sell.price} {display_currency(sell.currency)} ({row['sell_market'].value})"
+        print(f"{row['model']:<20} {left:>22} {right:>22} {row['gap']:>8.1%}")
+
+    print("\nРазница — это ещё не прибыль: из неё вычтутся комиссия продажи")
+    print("и перенос подарка между площадками. Порог связки задаётся в")
+    print("панели → «Торговля» → «Разница цен между площадками».")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -1476,6 +1525,7 @@ def main(argv: list[str] | None = None) -> int:
             "sales",
             "value",
             "fast",
+            "spread",
         ],
     )
     parser.add_argument(
@@ -1549,6 +1599,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "fast":
         return asyncio.run(_fast())
+
+    if args.command == "spread":
+        return asyncio.run(_spread(args.collection))
 
     if args.command == "rotate-key":
         return cmd_rotate_key(args.new_key, args.dry_run)
