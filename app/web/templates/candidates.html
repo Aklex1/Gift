@@ -70,6 +70,19 @@
   <div class="scan-note warn-text">{{ report.note }}</div>
   {% endif %}
 
+  {% if report.market_notes %}
+  <div class="scan-reject">
+    <div class="muted">Что помешало собрать лоты:</div>
+    <table class="reject">
+      {% for market, notes in report.market_notes.items() %}
+      {% for note in notes %}
+      <tr><td><b>{{ market }}</b></td><td>{{ note }}</td></tr>
+      {% endfor %}
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
   {% if report.spreads %}
   <div class="scan-reject">
     <div class="muted">

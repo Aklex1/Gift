@@ -66,6 +66,43 @@ def cmd_init() -> int:
     return 0
 
 
+def session_file_busy(path) -> bool:
+    """Занят ли файл сессии другим процессом.
+
+    Файл сессии Telethon — SQLite, и писать в него может только один
+    процесс. Проверяем заранее: иначе Telethon падает с трассировкой
+    посреди входа, уже запросив код.
+    """
+    import sqlite3
+
+    if not path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(path), timeout=1)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.rollback()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        return True
+    return False
+
+
+def _session_busy_message(path) -> str:
+    """Что именно делать, если файл сессии занят."""
+    return (
+        f"✗ Файл сессии занят другим процессом: {path}\n\n"
+        "  Писать в него может только кто-то один. Остановите все службы\n"
+        "  бота, войдите и запустите обратно:\n\n"
+        "      systemctl stop gift-worker gift-bot gift-web\n"
+        "      gift-cli login\n"
+        "      systemctl start gift-worker gift-bot gift-web\n\n"
+        "  Если службы уже остановлены, значит файл держит зависший\n"
+        "  процесс — найдите его: fuser -v " + str(path)
+    )
+
+
 async def _login(account_name: str | None = None) -> int:
     """Интерактивный вход в торговый аккаунт.
 
@@ -124,6 +161,13 @@ async def _login(account_name: str | None = None) -> int:
         return 1
 
     settings.ensure_dirs()
+
+    # Проверяем до того, как спрашивать код: занятый файл сессии иначе
+    # роняет вход трассировкой уже после ввода номера.
+    if session_file_busy(path):
+        print(_session_busy_message(path), file=sys.stderr)
+        return 1
+
     print(f"Вход в аккаунт: {label}")
     client = TelegramClient(str(path.with_suffix("")), api_id, api_hash)
     await client.connect()

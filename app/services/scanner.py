@@ -22,10 +22,12 @@ from sqlalchemy.orm import Session
 
 from app.adapters.base import (
     AdapterError,
+    AuthRequired,
     Capability,
     CapabilityStatus,
     ListingDTO,
     RateLimited,
+    SearchSkipped,
 )
 from app.adapters.registry import get_adapter
 from app.adapters.telegram_mtproto import TelegramAdapter
@@ -166,19 +168,37 @@ def _search_adapters(market: Market) -> list:
 
 async def collect_listings(
     market: Market, *, collections: list[str], limit: int
-) -> list[ListingDTO]:
-    """Собрать активные лоты площадки по списку коллекций."""
-    adapters = [a for a in _search_adapters(market) if a.supports(Capability.SEARCH)]
+) -> tuple[list[ListingDTO], list[str]]:
+    """Собрать активные лоты площадки по списку коллекций.
+
+    Returns:
+        (лоты, причины). Причины нужны ровно для одного случая, который
+        раньше выглядел одинаково при совершенно разных бедах: площадка
+        вернула ноль лотов. Без них в панели оставалась догадка
+        «проверьте токены и сеть», по которой ничего не найти.
+    """
+    notes: list[str] = []
+    everything = _search_adapters(market)
+    adapters = [a for a in everything if a.supports(Capability.SEARCH)]
     if not adapters:
-        return []
+        if not everything:
+            notes.append("нет ни одного аккаунта для поиска")
+        else:
+            reason = {
+                Market.TELEGRAM: "сессия не авторизована (gift-cli login)",
+            }.get(market, "нет токена площадки — задайте в «Настройках»")
+            notes.append(f"поиск недоступен: {reason}")
+        return ([], notes)
 
     out: list[ListingDTO] = []
     targets: list[str | None] = list(collections) if collections else [None]
     #: Коллекции раздаются аккаунтам по кругу.
     exhausted: set[int] = set()
+    empty: list[str] = []
 
     for index, collection in enumerate(targets):
         if len(exhausted) >= len(adapters):
+            notes.append("все аккаунты выбыли, часть коллекций не осмотрена")
             break
         # Пропускаем аккаунты, которые уже упёрлись в лимит.
         for offset in range(len(adapters)):
@@ -190,19 +210,42 @@ async def collect_listings(
 
         adapter = adapters[slot]
         label = getattr(adapter, "label", market.value)
+        where = collection or "весь рынок"
         try:
-            out.extend(await adapter.search(collection=collection, limit=limit))
+            found = await adapter.search(collection=collection, limit=limit)
+        except SearchSkipped as exc:
+            # Беда одной коллекции, а не площадки: остальные смотрим.
+            notes.append(str(exc))
+            continue
         except RateLimited as exc:
             log.warning("%s (%s): лимит запросов, аккаунт пропущен: %s",
                         market.value, label, exc)
+            notes.append(f"{label}: лимит запросов Telegram, аккаунт пропущен")
+            exhausted.add(slot)
+        except AuthRequired as exc:
+            log.warning("%s (%s): нет доступа: %s", market.value, label, exc)
+            notes.append(f"{label}: токен не принят ({exc})")
             exhausted.add(slot)
         except AdapterError as exc:
             log.warning("%s (%s): поиск недоступен: %s", market.value, label, exc)
+            notes.append(f"{label}: {exc}")
             exhausted.add(slot)
         except Exception as exc:  # noqa: BLE001 - один аккаунт не роняет скан
             log.exception("%s (%s): ошибка поиска: %s", market.value, label, exc)
+            notes.append(f"{label}: {type(exc).__name__}: {exc}")
             exhausted.add(slot)
-    return out
+        else:
+            if found:
+                out.extend(found)
+            else:
+                empty.append(where)
+
+    if empty and not out:
+        notes.append(
+            "площадка ответила пусто по: " + ", ".join(empty[:5])
+            + (" и др." if len(empty) > 5 else "")
+        )
+    return (out, notes)
 
 
 async def collect_history(market: Market, *, collections: list[str]) -> int:
@@ -335,10 +378,12 @@ async def scan_once() -> dict:
     # --- сбор данных ---
     all_listings: list[ListingDTO] = []
     for market, collections in wanted_markets.items():
-        rows = await collect_listings(
+        rows, notes = await collect_listings(
             market, collections=sorted(collections), limit=200
         )
         report["markets"][market.value] = len(rows)
+        if notes:
+            report.setdefault("market_notes", {})[market.value] = notes
         all_listings.extend(rows)
 
         facts = await collect_history(market, collections=sorted(collections))
@@ -346,10 +391,17 @@ async def scan_once() -> dict:
 
     report["listings"] = len(all_listings)
     if not all_listings:
-        report["note"] = (
-            "площадки не вернули ни одного лота — проверьте токены и сеть "
-            "(gift-cli probe)"
-        )
+        known = report.get("market_notes") or {}
+        if known:
+            # Причина известна — незачем отправлять человека гадать.
+            report["note"] = "ни одного лота. " + "; ".join(
+                f"{market}: {notes[0]}" for market, notes in known.items()
+            )
+        else:
+            report["note"] = (
+                "площадки не вернули ни одного лота — проверьте токены и сеть "
+                "(gift-cli probe)"
+            )
         report["finished_at"] = utcnow().isoformat(timespec="seconds")
         save_report(report)
         return report

@@ -247,8 +247,14 @@ class TelegramAdapter(MarketAdapter):
         if collection:
             gift_id = await self.resolve_collection(collection)
             if gift_id is None:
-                log.warning("Коллекция %r не найдена в каталоге Telegram", collection)
-                return []
+                # Пустой ответ здесь выглядел бы как «на рынке ничего
+                # нет», хотя дело в названии из настроек стратегии.
+                from app.adapters.base import SearchSkipped
+
+                raise SearchSkipped(
+                    f"коллекция {collection!r} не найдена в каталоге Telegram — "
+                    f"проверьте название в стратегии"
+                )
             targets = [gift_id]
         else:
             await self.catalog()
