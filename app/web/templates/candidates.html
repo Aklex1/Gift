@@ -2,7 +2,17 @@
 {% block title %}Кандидаты — Gift{% endblock %}
 {% block content %}
 <h1>Кандидаты</h1>
-<p class="muted">Подтверждение покупки выполняется в Telegram-боте.</p>
+{% if saved %}
+<div class="banner ok"><div>{{ saved }}</div></div>
+{% endif %}
+<p class="muted">
+  Покупку можно подтвердить здесь или в Telegram-боте — в обоих случаях
+  в два шага. Перед списанием бот заново проверяет цену на площадке.
+  {% if mode == 'safe' %}
+  <br>Режим <b>SAFE</b>: автоматических покупок нет, но подтверждённая
+  вручную проходит — решение ваше.
+  {% endif %}
+</p>
 
 <div class="scan {{ 'stale' if not report or stale }}">
   <div class="scan-head">
@@ -128,19 +138,52 @@
   {% endif %}
 </div>
 <table>
-  <tr><th>Подарок</th><th>Площадка</th><th>Цена</th><th>Оценка</th><th>ROI</th><th>Риск</th><th>Данные</th></tr>
+  <tr><th>Подарок</th><th>Площадка</th><th>Цена</th><th>Оценка</th>
+      <th>Продажа по</th><th>ROI</th><th>Риск</th><th>Данные</th><th></th></tr>
   {% for c in items %}
   <tr>
     <td>{{ c.name }}</td>
     <td>{{ c.market }}</td>
     <td>{{ fmt(c.price) }} ★</td>
     <td>{{ fmt(c.fair) }} ★</td>
+    <td>
+      {% if c.expected_sale %}
+        {{ fmt(c.expected_sale|float|round|int) }} ★
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
     <td class="{{ 'pos' if c.roi > 0 else 'neg' }}"><b>{{ '%.1f'|format(c.roi) }}%</b></td>
     <td>{{ c.risk }}/100</td>
     <td>{{ c.confidence }}</td>
+    <td>
+      <form method="post" action="/candidates/{{ c.id }}/buy" class="inline-form">
+        <button type="submit" class="mini">Купить</button>
+      </form>
+    </td>
   </tr>
+  {% if confirm == c.id %}
+  <tr>
+    <td colspan="9">
+      <div class="banner danger">
+        <div>
+          <b>Списание {{ fmt(c.price) }} ★ за «{{ c.name }}».</b>
+          Операция необратима. Перед покупкой бот заново проверит цену на
+          площадке и откажется, если она изменилась.
+          <br><span class="muted">ROI {{ '%.1f'|format(c.roi) }}% посчитан от
+            продажи по
+            {% if c.expected_sale %}{{ fmt(c.expected_sale|float|round|int) }} ★
+            {% else %}оценке{% endif %}, а не от «Оценки» {{ fmt(c.fair) }} ★:
+            продаём не выше floor, если он ниже медианы.</span>
+        </div>
+        <form method="post" action="/candidates/{{ c.id }}/buy">
+          <input type="hidden" name="confirmed" value="1">
+          <button type="submit">Подтвердить покупку</button>
+        </form>
+      </div>
+    </td>
+  </tr>
+  {% endif %}
   {% else %}
-  <tr><td colspan="7" class="muted">Активных кандидатов нет</td></tr>
+  <tr><td colspan="9" class="muted">Активных кандидатов нет</td></tr>
   {% endfor %}
 </table>
 {% endblock %}

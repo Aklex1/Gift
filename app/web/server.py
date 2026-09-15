@@ -161,10 +161,13 @@ async def dashboard(request: Request, _: str = Depends(require_auth)) -> HTMLRes
 
 @app.get("/candidates", response_class=HTMLResponse)
 async def candidates_page(
-    request: Request, _: str = Depends(require_auth)
+    request: Request,
+    confirm: int = 0,
+    saved: str = "",
+    _: str = Depends(require_auth),
 ) -> HTMLResponse:
     """Список активных кандидатов и состояние сканера."""
-    from app.services import scanner
+    from app.services import runtime, scanner
 
     with session_scope() as session:
         rows = (
@@ -188,6 +191,14 @@ async def candidates_page(
                     "risk": row.risk_score,
                     "confidence": str(row.confidence),
                     "rationale": row.rationale or {},
+                    # По этой цене считался ROI. Обычно она ниже
+                    # «Оценки»: продаём не выше floor, если он ниже
+                    # медианы. Без неё ROI выглядит необъяснимо
+                    # маленьким рядом с высокой оценкой.
+                    "expected_sale": (row.rationale or {}).get(
+                        "expected_sale_price"
+                    ),
+                    "market_value": row.market,
                 }
             )
         # Отброшенные кандидаты объясняют, почему список пуст.
@@ -233,8 +244,60 @@ async def candidates_page(
             "states": recent_states,
             "scan_interval": settings.scan_interval_sec,
             "fmt": gifts_service.format_stars,
+            "confirm": confirm,
+            "saved": saved,
+            "mode": runtime.mode().value,
         },
     )
+
+
+@app.post("/candidates/{candidate_id}/buy")
+async def candidate_buy(
+    candidate_id: int, request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Купить кандидата после явного подтверждения.
+
+    Два шага, как в боте: сначала показывается сумма списания, и лишь
+    отдельное нажатие запускает покупку. Операция необратима, поэтому
+    случайный клик по строке таблицы не должен тратить деньги.
+    """
+    from app.enums import TradeMode
+    from app.models import AuditLog
+    from app.services import executor
+
+    form = await request.form()
+    if not form.get("confirmed"):
+        # Первый шаг: просто разворачиваем строку с предупреждением.
+        return RedirectResponse(
+            f"/candidates?confirm={candidate_id}", status_code=303
+        )
+
+    result = await executor.execute_buy(
+        candidate_id, actor="web", mode=TradeMode.SEMI
+    )
+
+    with session_scope() as session:
+        session.add(
+            AuditLog(
+                actor="web",
+                action="candidate.buy",
+                target=str(candidate_id),
+                payload={"detail": result.get("detail")},
+                ok=bool(result.get("ok")),
+            )
+        )
+
+    if result.get("ok") is True:
+        note = f"✅ {result['detail']}"
+    elif result.get("ok") is None:
+        note = (
+            f"⚠️ {result['detail']} — повторная покупка не выполняется, "
+            "результат появится после сверки"
+        )
+    else:
+        note = f"❌ Покупка не выполнена: {result.get('detail')}"
+
+    return RedirectResponse(f"/candidates?saved={note}", status_code=303)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
