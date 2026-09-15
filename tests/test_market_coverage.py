@@ -30,7 +30,14 @@ def _adapter(pages):
     asked: list[int] = []
 
     async def request(method, path, **kwargs):
-        """Отдать страницу по смещению."""
+        """Отдать страницу по смещению.
+
+        Поиск Portals фильтруется по id коллекции, поэтому адаптер
+        сначала спрашивает каталог — двойник отвечает и на него.
+        """
+        if path == "/collections":
+            return {"collections": [{"id": "c-1", "short_name": "lolpop",
+                                     "name": "Lol Pop"}]}
         offset = kwargs["params"]["offset"]
         asked.append(offset)
         rows = pages.get(offset, [])

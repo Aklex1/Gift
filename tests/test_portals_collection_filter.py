@@ -41,6 +41,13 @@ def _adapter(rows, monkeypatch):
     seen: dict = {}
 
     async def fake_request(method, path, **kwargs):
+        if path == "/collections":
+            return {
+                "collections": [
+                    {"id": "ls-1", "short_name": "lightsword",
+                     "name": "Light Sword"},
+                ]
+            }
         seen.update(kwargs.get("params") or {})
         return {"results": rows}
 
@@ -69,15 +76,52 @@ def test_another_collection_does_not_match():
 
 
 @pytest.mark.asyncio
-async def test_search_sends_the_short_name(monkeypatch):
-    """В фильтр уходит короткое имя: на «Light Sword» он не применяется."""
+async def test_search_filters_by_collection_id(monkeypatch):
+    """В фильтр уходит id коллекции: имя площадка не понимает."""
     adapter, seen = _adapter(
         [_nft("Light Sword", "Bifrost", "6.22", "a")], monkeypatch
     )
 
     await adapter.search(collection="Light Sword", limit=10)
 
-    assert seen["filter_by_collections"] == "lightsword"
+    assert seen["collection_id"] == "ls-1"
+    assert "filter_by_collections" not in seen
+
+
+@pytest.mark.asyncio
+async def test_unknown_collection_is_refused(monkeypatch):
+    """Коллекции нет в каталоге — отказ, а не запрос без фильтра.
+
+    Уйти без фильтра значит получить самые дешёвые лоты всего рынка и
+    принять их за эту коллекцию.
+    """
+    adapter, _ = _adapter([], monkeypatch)
+
+    with pytest.raises(SearchSkipped) as exc:
+        await adapter.search(collection="Такой Нет", limit=10)
+
+    assert "каталоге" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_catalog_is_asked_once(monkeypatch):
+    """Каталог спрашивается один раз, а не на каждый поиск."""
+    adapter, _ = _adapter(
+        [_nft("Light Sword", "Bifrost", "6.22", "a")], monkeypatch
+    )
+    paths: list[str] = []
+    inner = adapter.request
+
+    async def counting(method, path, **kwargs):
+        paths.append(path)
+        return await inner(method, path, **kwargs)
+
+    adapter.request = counting
+
+    await adapter.search(collection="Light Sword", limit=10)
+    await adapter.search(collection="Light Sword", limit=10)
+
+    assert paths.count("/collections") == 1
 
 
 @pytest.mark.asyncio

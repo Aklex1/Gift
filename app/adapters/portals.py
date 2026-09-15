@@ -67,6 +67,10 @@ RENEW_COOLDOWN_SEC = 120
 #: Сколько живёт кэш floor'ов по атрибутам.
 FLOOR_CACHE_SEC = 600.0
 
+#: Сколько живёт каталог коллекций. Коллекций около 120, и новые
+#: появляются редко, поэтому час — с запасом.
+CATALOG_CACHE_SEC = 3600.0
+
 
 def short_collection_name(collection: str) -> str:
     """Короткое имя коллекции в том виде, в каком его ждёт Portals.
@@ -151,6 +155,9 @@ class PortalsAdapter(HttpMarketAdapter):
         )
         #: Кэш floor по атрибутам: коллекция -> (когда, значения).
         self._floor_cache: dict[str, tuple[dt.datetime, dict]] = {}
+        #: Каталог коллекций: короткое имя -> id площадки.
+        self._catalog: dict[str, str] = {}
+        self._catalog_at: float = 0.0
         #: Когда последний раз продлевали токен, по монотонным часам.
         #: None — ни разу; ноль здесь не годится, потому что
         #: time.monotonic() отсчитывается не от запуска процесса, и
@@ -268,6 +275,58 @@ class PortalsAdapter(HttpMarketAdapter):
     # ------------------------------------------------------------------
     # Чтение
     # ------------------------------------------------------------------
+    async def catalog(self) -> dict[str, str]:
+        """Каталог коллекций площадки: короткое имя -> id.
+
+        Отдаётся целиком одним запросом: коллекций около 120.
+        """
+        import time
+
+        now = time.monotonic()
+        if self._catalog and now - self._catalog_at < CATALOG_CACHE_SEC:
+            return self._catalog
+
+        data = await self.request("GET", "/collections", params={"limit": 1000})
+        catalog: dict[str, str] = {}
+        for item in dig(data, "collections", "results", "items", "data"):
+            if not isinstance(item, dict):
+                continue
+            ident = item.get("id")
+            if not ident:
+                continue
+            # И по короткому имени, и по отображаемому: вызывающая
+            # сторона знает коллекцию как «Light Sword».
+            for key in (item.get("short_name"), item.get("name")):
+                if key:
+                    catalog[short_collection_name(str(key))] = str(ident)
+        if catalog:
+            self._catalog = catalog
+            self._catalog_at = now
+        return catalog
+
+    async def collection_id(self, collection: str) -> str:
+        """Id коллекции у площадки.
+
+        Поиск Portals фильтруется **только** по id. На имя — хоть
+        «Light Sword», хоть «lightsword» — фильтр не применяется, и
+        это не ошибка в ответе: приходит выборка без фильтра, то есть
+        при сортировке по возрастанию цены самые дешёвые лоты всего
+        рынка. На запрос Light Sword так возвращался Lunar Snake по
+        3.95 GRAM при floor самого Light Sword 6.45.
+
+        Raises:
+            SearchSkipped: коллекции нет в каталоге. Промолчать и уйти
+                без фильтра значит вернуться к тому же баге.
+        """
+        key = short_collection_name(collection)
+        catalog = await self.catalog()
+        ident = catalog.get(key)
+        if not ident:
+            raise SearchSkipped(
+                f"portals: коллекции «{collection}» нет в каталоге площадки"
+            )
+        return ident
+
     async def search(
         self,
         *,
@@ -292,9 +351,9 @@ class PortalsAdapter(HttpMarketAdapter):
             "status": "listed",
         }
         if collection:
-            # Короткое имя, а не отображаемое: на «Light Sword»
-            # площадка фильтр не применяет вовсе.
-            params["filter_by_collections"] = short_collection_name(collection)
+            # Только id: имя коллекции — хоть отображаемое, хоть
+            # короткое — площадка не понимает и фильтр не применяет.
+            params["collection_id"] = await self.collection_id(collection)
         if model:
             params["filter_by_models"] = model
         if backdrop:
@@ -383,7 +442,7 @@ class PortalsAdapter(HttpMarketAdapter):
         self._require(Capability.HISTORY)
         params: dict[str, object] = {"offset": 0, "limit": min(limit, 100)}
         if collection:
-            params["filter_by_collections"] = short_collection_name(collection)
+            params["collection_id"] = await self.collection_id(collection)
         if model:
             params["filter_by_models"] = model
 
