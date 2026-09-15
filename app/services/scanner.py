@@ -38,7 +38,7 @@ from app.enums import Currency, Market
 from app.models import Candidate, utcnow
 from app.services import gifts as gifts_service
 from app.services import arbitrage
-from app.services import marketdata, salestats
+from app.services import cardtext, marketdata, notify, salestats
 from app.services import strategy as strategy_service, valuation
 from app.services.marketdata import MarketSnapshot
 
@@ -643,6 +643,64 @@ def rarest_attribute_floor(
     return best, reason
 
 
+def attribute_premiums(
+    session: Session, dto: ListingDTO, price_stars: Decimal
+) -> list[dict]:
+    """Насколько floor каждого признака выше цены лота.
+
+    Именно это и есть довод «почему дёшево»: у подарка три признака
+    сразу — модель, фон, символ, — и каждый торгуется своим floor'ом.
+    Лот дешевле floor'а своего фона на четверть означает, что один фон
+    стоит дороже всего лота.
+
+    Берётся из кэша: floor'ы уже спрошены при сборе источников, и
+    второй запрос за теми же числами был бы лишним.
+
+    Returns:
+        Признаки по убыванию запаса, самый сильный первым.
+    """
+    adapter = get_adapter(Market.PORTALS)
+    cached = getattr(adapter, "cached_floors", None)
+    if cached is None or price_stars <= 0:
+        return []
+    floors = cached(dto.gift.collection)
+    if not floors:
+        return []
+
+    supply = floors.get("supply") or {}
+    out: list[dict] = []
+    for section, value, label in (
+        ("models", dto.gift.model, "модель"),
+        ("backdrops", dto.gift.backdrop, "фон"),
+        ("symbols", dto.gift.symbol, "символ"),
+    ):
+        if not value:
+            continue
+        raw = (floors.get(section) or {}).get(value)
+        if not raw:
+            continue
+        floor_stars = marketdata.to_stars(
+            session, Decimal(str(raw)), Currency.TON
+        )
+        if not floor_stars or floor_stars <= 0:
+            continue
+        out.append(
+            {
+                "label": label,
+                "name": str(value),
+                "floor": str(floor_stars.quantize(Decimal("1"))),
+                "premium": str(
+                    (floor_stars / price_stars - Decimal(1)).quantize(
+                        Decimal("0.0001")
+                    )
+                ),
+                "supply": (supply.get(section) or {}).get(value),
+            }
+        )
+    out.sort(key=lambda row: Decimal(row["premium"]), reverse=True)
+    return out
+
+
 async def gather_sources(
     session: Session, dto: ListingDTO
 ) -> list[MarketSnapshot]:
@@ -1107,6 +1165,8 @@ async def evaluate_listing(
 
     created = 0
     rejections: Counter[str] = Counter()
+    #: Карточки находок: собираются внутри сессии, отправляются после.
+    cards: list[tuple[str, str, str]] = []
     with session_scope() as session:
         price_stars = marketdata.to_stars(session, dto.price, dto.currency)
         if price_stars is None or price_stars <= 0:
@@ -1261,10 +1321,19 @@ async def evaluate_listing(
                     "sources": audit,
                     "better_sale": _sale_hint(elsewhere),
                     "sales": stats.as_dict(),
+                    "attributes": attribute_premiums(session, dto, price_stars),
                 }
                 exists.expires_at = utcnow() + CANDIDATE_TTL
                 continue
 
+            rationale = {
+                **result.as_dict(),
+                "market": snapshot.as_dict(),
+                "sources": audit,
+                "better_sale": _sale_hint(elsewhere),
+                "sales": stats.as_dict(),
+                "attributes": attribute_premiums(session, dto, price_stars),
+            }
             session.add(
                 Candidate(
                     strategy_id=strategy.id,
@@ -1282,13 +1351,7 @@ async def evaluate_listing(
                     days_to_sell=snapshot.days_to_sell,
                     sale_velocity=snapshot.velocity_per_day or None,
                     first_seen_at=seen_first,
-                    rationale={
-                        **result.as_dict(),
-                        "market": snapshot.as_dict(),
-                        "sources": audit,
-                        "better_sale": _sale_hint(elsewhere),
-                        "sales": stats.as_dict(),
-                    },
+                    rationale=rationale,
                     state="pending",
                     expires_at=utcnow() + CANDIDATE_TTL,
                 )
@@ -1302,6 +1365,36 @@ async def evaluate_listing(
                 float(result.net_roi) * 100,
                 result.risk_score,
             )
+            # Карточка собирается здесь, пока под рукой всё: обоснование,
+            # признаки, курс. Отправляется после выхода из сессии —
+            # держать транзакцию открытой на время сетевого запроса
+            # значит подарить площадке возможность подвесить базу.
+            cards.append((
+                dto.market.value,
+                dto.external_id,
+                cardtext.render(
+                    name=gifts_service.describe(gift),
+                    market=dto.market,
+                    external_id=dto.external_id,
+                    collection=dto.gift.collection,
+                    number=dto.gift.number,
+                    model=dto.gift.model,
+                    backdrop=dto.gift.backdrop,
+                    price_native=dto.price,
+                    currency=dto.currency,
+                    price_usd=marketdata.to_usd(
+                        session, price_stars, Currency.STARS
+                    ),
+                    profit_usd=marketdata.to_usd(
+                        session, result.net_profit, Currency.STARS
+                    ),
+                    rationale=rationale,
+                    days_to_sell=snapshot.days_to_sell,
+                ),
+            ))
+
+    for market_value, external_id, text in cards:
+        await notify.found(market_value, external_id, text)
     return (created, rejections)
 
 

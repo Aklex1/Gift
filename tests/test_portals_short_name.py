@@ -96,5 +96,6 @@ async def test_empty_answer_gives_empty_floors(monkeypatch):
     monkeypatch.setattr(adapter, "request", fake_request)
 
     assert await adapter.attribute_floors("Нечто") == {
-        "models": {}, "symbols": {}, "backdrops": {}
+        "models": {}, "symbols": {}, "backdrops": {},
+        "supply": {"models": {}, "symbols": {}, "backdrops": {}},
     }

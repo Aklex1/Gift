@@ -561,7 +561,7 @@ class PortalsAdapter(HttpMarketAdapter):
         # В ответе ключом стоит короткое имя, которое мы и спрашивали.
         out = self._parse_attribute_floors(data, short_name)
         self._floor_cache[collection] = (dt.datetime.utcnow(), out)
-        if not any(out.values()):
+        if not any(out.get(section) for section in ("models", "symbols", "backdrops")):
             log.info(
                 "Portals: floor по атрибутам для %r пуст — вероятно, нужен токен",
                 collection,
@@ -591,10 +591,13 @@ class PortalsAdapter(HttpMarketAdapter):
         Площадка возвращала разные структуры, поэтому поддерживаются
         обе: словарь floor_prices и список атрибутов внутри collections.
         """
-        out: dict[str, dict[str, Decimal]] = {
+        out: dict[str, dict] = {
             "models": {},
             "symbols": {},
             "backdrops": {},
+            # Сколько таких признаков выпущено всего. Нужно, чтобы
+            # сказать «фон редкий» числом, а не на глаз.
+            "supply": {"models": {}, "symbols": {}, "backdrops": {}},
         }
         if not isinstance(data, dict):
             return out
@@ -626,6 +629,12 @@ class PortalsAdapter(HttpMarketAdapter):
                     )
                     if name and price and price > 0:
                         out[section][str(name)] = price
+                    supply = first(entry, "supply", "count", "total")
+                    if name and supply is not None:
+                        try:
+                            out["supply"][section][str(name)] = int(supply)
+                        except (TypeError, ValueError):
+                            pass
         return out
 
     async def fetch_listing(self, external_id: str) -> ListingDTO | None:

@@ -48,11 +48,13 @@ KINDS: dict[str, str] = {
     "balance": "заканчиваются средства",
     "trade": "совершена сделка",
     "token": "не удалось продлить токен площадки",
+    "find": "найден кандидат",
 }
 
 #: Виды, включённые по умолчанию.
 DEFAULT_ENABLED = {
     "limit", "flood", "market", "stale", "unknown", "scan", "trade", "token",
+    "find",
 }
 
 
@@ -418,3 +420,20 @@ async def notify_trade(
     if detail:
         text += f"\n\n{detail}"
     return await send(text)
+
+
+#: Как долго не повторять карточку по одному и тому же лоту. Кандидат
+#: протухает и находится снова — без паузы один лот прислал бы карточку
+#: каждые несколько минут, и читать их перестали бы все разом.
+FIND_COOLDOWN = dt.timedelta(hours=6)
+
+
+async def found(market: str, external_id: str, text: str) -> bool:
+    """Прислать карточку находки сразу, как она появилась.
+
+    Смысл ровно в «сразу»: недооценённый лот живёт минуты, и находка,
+    которую владелец увидит вечером в таблице, — это не находка, а
+    отчёт о чужой покупке.
+    """
+    return await alert("find", f"{market}:{external_id}", text,
+                       cooldown=FIND_COOLDOWN)
