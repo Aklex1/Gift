@@ -263,6 +263,17 @@ FIELD_BY_KEY = {field.key: field for field in FIELDS}
 _cache: dict[str, tuple[str | None, float]] = {}
 
 
+def looks_like_ton_address(value: str) -> bool:
+    """Похоже ли значение на адрес кошелька TON.
+
+    Нужно там, где ждут аккаунт Telegram: адрес кошелька в такое поле
+    попадает легко — именно его Portals показывает на видном месте, —
+    а последствия у ошибки необратимые.
+    """
+    cleaned = (value or "").strip()
+    return bool(_TON_FRIENDLY.match(cleaned) or _TON_RAW.match(cleaned))
+
+
 def _is_secret(key: str) -> bool:
     """Нужно ли шифровать это значение."""
     field = FIELD_BY_KEY.get(key)

@@ -267,3 +267,40 @@ async def test_unresolvable_target_refused(target_env, capsys):
 
     assert await cli._transfer_target() == 1
     assert "потерянный подарок" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_ton_address_as_target_refused(target_env, capsys):
+    """Адрес кошелька вместо аккаунта — отказ с объяснением.
+
+    Самая вероятная ошибка: Portals показывает адрес кошелька на видном
+    месте и сам предупреждает «только GRAM и токены TON». Подарок —
+    это NFT, он передаётся аккаунту Telegram, и отправка на адрес
+    кошелька означала бы его потерю.
+    """
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value(
+        "PORTALS_DEPOSIT", "UQBALOTljDHq-S5vTxCInxczTpE_mMAEN28COu7lYxeNEVE8"
+    )
+    target_env(_Entity())
+
+    assert await cli._transfer_target() == 1
+    err = capsys.readouterr().err
+
+    assert "адрес кошелька TON" in err
+    assert "только GRAM" in err
+    assert "Гифты" in err
+
+
+def test_ton_address_recognised():
+    """Распознаются оба формата адреса и не задеваются имена аккаунтов."""
+    from app.services.secrets import looks_like_ton_address
+
+    assert looks_like_ton_address(
+        "UQBALOTljDHq-S5vTxCInxczTpE_mMAEN28COu7lYxeNEVE8"
+    )
+    assert not looks_like_ton_address("@GiftsToPortals")
+    assert not looks_like_ton_address("777000")
+    assert not looks_like_ton_address("")
