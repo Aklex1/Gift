@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import signal
 
@@ -259,6 +260,44 @@ def apply_fast_interval(scheduler) -> None:
         log.info("Быстрый контур: интервал %s c", wanted)
 
 
+async def task_divergence() -> None:
+    """Поиск расхождений цен между площадками.
+
+    Обходит все доступные площадки по коротком списку коллекций и
+    ищет один и тот же подарок дешевле у одних и дороже у других.
+    Оценка здесь не нужна: обе цены названы рынком.
+    """
+
+    async def run() -> None:
+        from app.services import arbitrage, divergence, notify
+
+        if not arbitrage.enabled():
+            return
+        report = await divergence.sweep()
+        if not report.get("ok"):
+            return
+
+        strong = divergence.worth_telling(report.get("spreads") or [])
+        if not strong:
+            return
+        lines = [f"💱 Расхождение цен: связок {report['found']}"]
+        for row in strong[:5]:
+            lines.append(
+                f"• {row['kind']}: купить на {row['buy_market']} "
+                f"{row['buy_price_native']} → продать на {row['sell_market']} "
+                f"({row['net_roi']})"
+            )
+        lines.append("Перенос подарка между площадками выполняется отдельно.")
+        # Через alert, а не прямой отправкой: связки держатся часами,
+        # и без паузы одна и та же пришла бы каждые пять минут.
+        await notify.alert(
+            "trade", "divergence", "\n".join(lines),
+            cooldown=dt.timedelta(hours=1),
+        )
+
+    await _guarded("divergence", run)
+
+
 async def task_maintenance() -> None:
     """Освободить протухшие резервы и кандидатов."""
 
@@ -323,6 +362,9 @@ async def main() -> None:
     # Продажи копятся сами по себе; чаще, чем раз в десять минут,
     # ходить на чужой сайт незачем.
     scheduler.add_job(task_fragment, "interval", seconds=600, id="fragment")
+    # Связка живёт дольше недооценённого лота: цены на площадках
+    # расходятся не на секунды, а на часы.
+    scheduler.add_job(task_divergence, "interval", seconds=300, id="divergence")
     scheduler.add_job(task_maintenance, "interval", seconds=60, id="maintenance")
     # Интервал сканирования меняют из панели, а планировщику он задан
     # при запуске. Без пересборки задания настройка молча не работала

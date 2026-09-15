@@ -42,6 +42,27 @@ log = logging.getLogger(__name__)
 #: MRKT ожидает Referer своего CDN — без него запросы отклоняются.
 CDN_REFERER = "https://cdn.tgmrkt.io/"
 
+#: Имя куки, в которой площадка держит токен.
+COOKIE_NAME = "access_token"
+
+
+def cookie_token(value: str | None) -> str:
+    """Выделить сам токен из того, что скопировали.
+
+    Из браузера значение достают по-разному: кто-то копирует токен,
+    кто-то целую строку куки. Разбирать это здесь дешевле, чем
+    объяснять в интерфейсе, какой из двух видов «правильный».
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    for part in raw.split(";"):
+        part = part.strip()
+        if part.startswith(f"{COOKIE_NAME}="):
+            return part[len(COOKIE_NAME) + 1:].strip()
+    # Строка без имени куки — значит это сам токен.
+    return raw.split(";")[0].strip()
+
 
 class MrktAdapter(HttpMarketAdapter):
     """MRKT: чтение каталога и истории, опционально — торговля."""
@@ -83,14 +104,26 @@ class MrktAdapter(HttpMarketAdapter):
     # Авторизация
     # ------------------------------------------------------------------
     def _headers(self) -> dict[str, str]:
-        """MRKT принимает токен без схемы Bearer и требует Referer."""
+        """Заголовки MRKT: Referer своего CDN и токен в двух видах.
+
+        Токен площадка держит в куке ``access_token``, а не в заголовке
+        Authorization — из-за этого скопированное из браузера значение
+        отвергалось с 401, хотя было верным. Шлём и куку, и заголовок:
+        лишний заголовок ничего не стоит, а какой именно вид примут,
+        зависит от версии их API.
+
+        Значение принимается в любом виде, в каком его копируют: и
+        голым токеном, и целой строкой куки ``access_token=...``.
+        """
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; GiftTradingBot/0.1)",
             "Accept": "application/json",
             "Referer": CDN_REFERER,
         }
-        if self.auth:
-            headers["Authorization"] = ascii_header(self.auth)
+        token = cookie_token(self.auth)
+        if token:
+            headers["Authorization"] = ascii_header(token)
+            headers["Cookie"] = ascii_header(f"{COOKIE_NAME}={token}")
         return headers
 
     async def ensure_token(self, *, force: bool = False) -> bool:

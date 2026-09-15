@@ -1495,6 +1495,56 @@ async def _spread(collection: str | None) -> int:
     return 0
 
 
+async def _divergence() -> int:
+    """Прогнать поиск расхождений и показать найденное."""
+    from app.db import init_db
+    from app.services import arbitrage, divergence
+
+    init_db()
+
+    if not arbitrage.enabled():
+        print("Поиск расхождений выключен.")
+        print("Включить: панель → «Торговля» → «Разница цен между площадками».")
+        return 0
+
+    markets = divergence.searchable_markets()
+    print(f"Площадки с доступным поиском: "
+          f"{', '.join(m.value for m in markets) or 'ни одной'}")
+    if len(markets) < 2:
+        print("Сравнивать не с чем — нужна хотя бы вторая площадка.")
+        print("Подключить MRKT: gift-cli renew-tokens")
+        return 0
+
+    report = await divergence.sweep()
+    if not report.get("ok"):
+        print(f"✗ {report.get('detail')}", file=sys.stderr)
+        return 1
+
+    print(f"Коллекций: {len(report['collections'])}, "
+          f"лотов: {report['listings']}, за {report['duration_sec']} c")
+    for note in report.get("notes", []):
+        print(f"  ✗ {note}")
+
+    rows = report.get("spreads") or []
+    if not rows:
+        print("\nРасхождений выше порога не найдено.")
+        print("Порог меняется в панели → «Торговля».")
+        return 0
+
+    print(f"\n=== найдено связок: {report['found']} ===")
+    for row in rows:
+        print(f"\n  {row['kind']}")
+        print(f"    купить  {row['buy_market']:<9} {row['buy_price_native']}")
+        print(f"    продать {row['sell_market']:<9} "
+              f"{row['sell_price_stars']} ★ (лотов там: {row['sell_side_listings']})")
+        print(f"    итог    {row['net_profit_stars']} ★ · {row['net_roi']}")
+        for reason in row.get("reasons", [])[:2]:
+            print(f"    — {reason}")
+
+    print("\nПеренос подарка между площадками — отдельный шаг, вручную.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Точка входа CLI."""
     parser = argparse.ArgumentParser(
@@ -1526,6 +1576,7 @@ def main(argv: list[str] | None = None) -> int:
             "value",
             "fast",
             "spread",
+            "divergence",
         ],
     )
     parser.add_argument(
@@ -1602,6 +1653,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "spread":
         return asyncio.run(_spread(args.collection))
+
+    if args.command == "divergence":
+        return asyncio.run(_divergence())
 
     if args.command == "rotate-key":
         return cmd_rotate_key(args.new_key, args.dry_run)
