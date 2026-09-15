@@ -153,6 +153,31 @@
   </div>
   {% endif %}
 </div>
+<form method="get" action="/candidates" class="inline-form" id="filters"
+      style="margin:12px 0">
+  <label class="cap">
+    Площадка
+    <select name="market" onchange="this.form.submit()">
+      <option value="">все</option>
+      {% for m in markets %}
+      <option value="{{ m }}" {{ 'selected' if market == m }}>{{ m }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="cap">
+    ROI
+    <select name="roi" onchange="this.form.submit()">
+      {% for r in roi_ranges %}
+      <option value="{{ r }}" {{ 'selected' if roi == r }}>{{ r }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% if market or (roi and roi != 'любой') %}
+  <a href="/candidates" class="mini">сбросить</a>
+  {% endif %}
+  <noscript><button type="submit" class="mini">Применить</button></noscript>
+</form>
+
 <table>
   <tr><th>Подарок</th><th>Площадка</th><th>Цена</th><th>Оценка</th>
       <th>Продажа по</th><th>ROI</th><th>Риск</th><th>Данные</th><th></th></tr>
@@ -172,6 +197,8 @@
     <td>{{ c.confidence }}</td>
     <td>
       <form method="post" action="/candidates/{{ c.id }}/buy" class="inline-form">
+        <input type="hidden" name="market" value="{{ market }}">
+        <input type="hidden" name="roi" value="{{ roi }}">
         <button type="submit" class="mini">Купить</button>
       </form>
     </td>
@@ -229,6 +256,8 @@
         </div>
         <form method="post" action="/candidates/{{ c.id }}/buy">
           <input type="hidden" name="confirmed" value="1">
+          <input type="hidden" name="market" value="{{ market }}">
+          <input type="hidden" name="roi" value="{{ roi }}">
           <button type="submit">Подтвердить покупку</button>
         </form>
       </div>
@@ -240,15 +269,23 @@
   {% endfor %}
 </table>
 
+{% set filtered = total_all != total_pending %}
 {% if total_pending > shown_limit %}
 <p class="muted">
   Показаны <b>{{ shown_limit }}</b> кандидатов с наибольшим ROI из
-  <b>{{ total_pending }}</b>. Остальные никуда не делись: бот видит их
-  все, и в боте они тоже доступны. Чтобы список стал короче и
-  осмысленнее, поднимите минимальный ROI на странице
-  <a href="/strategies">Стратегии</a>.
+  <b>{{ total_pending }}</b>{% if filtered %}, подходящих под фильтр
+  (всего кандидатов {{ total_all }}){% endif %}. Остальные никуда не
+  делись: бот видит их все, и в боте они тоже доступны.
 </p>
 {% elif total_pending %}
-<p class="muted">Показаны все {{ total_pending }} подходящих кандидата.</p>
+<p class="muted">
+  Показаны все {{ total_pending }}{% if filtered %} под фильтром —
+  всего кандидатов {{ total_all }}{% endif %}.
+</p>
+{% elif total_all %}
+<p class="muted">
+  Под фильтр не подошёл ни один кандидат, хотя всего их
+  {{ total_all }}. <a href="/candidates">Сбросить фильтр</a>.
+</p>
 {% endif %}
 {% endblock %}

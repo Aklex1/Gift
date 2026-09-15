@@ -257,8 +257,8 @@ def test_truncation_is_disclosed(panel, session):
         server.CANDIDATES_SHOWN = 100
 
     assert "Показаны <b>2</b>" in page
-    assert "из\n  <b>6</b>" in page or "<b>6</b>" in page
-    assert "никуда не делись" in page
+    assert "<b>6</b>" in page
+    assert "никуда" in page and "делись" in page
 
 
 def test_full_list_says_so(panel):
@@ -266,3 +266,97 @@ def test_full_list_says_so(panel):
     page = panel.get("/candidates", auth=AUTH).text
 
     assert "Показаны все" in page
+
+
+# --- фильтры на странице кандидатов -----------------------------------
+
+
+@pytest.fixture()
+def many(panel, session):
+    """Кандидаты на разных площадках и с разным ROI."""
+    import datetime as dt
+
+    from app.models import Candidate, Gift, utcnow
+
+    rows = [
+        ("telegram", "0.03"), ("telegram", "0.12"),
+        ("portals", "0.07"), ("portals", "0.35"), ("portals", "1.20"),
+    ]
+    for i, (market, roi) in enumerate(rows, start=10):
+        gift = Gift(canonical_key=f"g#{i}", collection="C", number=i)
+        session.add(gift)
+        session.flush()
+        session.add(
+            Candidate(
+                strategy_id=1, gift_id=gift.id, market=market,
+                listing_external_id=str(i), price_stars=Decimal("100"),
+                fair_value_stars=Decimal("200"), net_roi=Decimal(roi),
+                risk_score=10, confidence="high", state="pending",
+                expires_at=utcnow() + dt.timedelta(minutes=10),
+            )
+        )
+    session.flush()
+    return panel
+
+
+def test_filter_by_market(many):
+    """Выбор площадки оставляет только её кандидатов."""
+    page = many.get("/candidates?market=portals", auth=AUTH).text
+
+    # Три лота Portals и ни одного телеграмного (кроме заголовков).
+    assert page.count("<td>portals</td>") == 3
+    assert "<td>telegram</td>" not in page
+
+
+def test_filter_by_roi(many):
+    """Порог ROI отсекает всё, что ниже."""
+    page = many.get("/candidates?roi=от+20%25", auth=AUTH).text
+
+    # Проходят только 35% и 120%.
+    assert "35.0%" in page
+    assert "120.0%" in page
+    assert "3.0%" not in page
+
+
+def test_filters_combine(many):
+    """Площадка и ROI действуют вместе."""
+    page = many.get("/candidates?market=portals&roi=от+50%25", auth=AUTH).text
+
+    assert "120.0%" in page
+    assert "35.0%" not in page
+
+
+def test_filter_reports_hidden_total(many):
+    """Видно, сколько кандидатов скрыл фильтр, а не только сколько прошло."""
+    page = many.get("/candidates?market=portals", auth=AUTH).text
+
+    assert "всего кандидатов" in page
+
+
+def test_empty_filter_result_explains(many):
+    """Пустая выборка объясняется и предлагает сбросить фильтр."""
+    page = many.get("/candidates?roi=от+100%25&market=telegram", auth=AUTH).text
+
+    assert "не подошёл ни один" in page
+    assert "Сбросить фильтр" in page
+
+
+def test_filter_survives_buy_click(many, session):
+    """Фильтр не слетает при нажатии «Купить»."""
+    response = many.post(
+        "/candidates/1/buy", auth=AUTH,
+        data={"market": "portals", "roi": "от 20%"},
+        follow_redirects=False,
+    )
+
+    location = response.headers["location"]
+    assert "market=portals" in location
+    assert "confirm=1" in location
+
+
+def test_no_filter_shows_everything(many):
+    """Без фильтра видны все площадки."""
+    page = many.get("/candidates", auth=AUTH).text
+
+    assert "<td>portals</td>" in page
+    assert "<td>telegram</td>" in page

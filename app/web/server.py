@@ -39,6 +39,26 @@ BASE_DIR = Path(__file__).resolve().parent
 #: прямо, а не умалчивается.
 CANDIDATES_SHOWN = 100
 
+#: Диапазоны ROI для фильтра. Ключ — то, что видит человек; значение —
+#: нижняя граница. Порог именно нижний: интересует «не хуже чем», а не
+#: попадание в вилку.
+ROI_RANGES: dict[str, Decimal | None] = {
+    "любой": None,
+    "от 5%": Decimal("0.05"),
+    "от 10%": Decimal("0.10"),
+    "от 20%": Decimal("0.20"),
+    "от 50%": Decimal("0.50"),
+    "от 100%": Decimal("1.00"),
+}
+
+
+def _filter_query(market: str, roi: str) -> str:
+    """Собрать хвост адреса, чтобы фильтр переживал переходы."""
+    from urllib.parse import urlencode
+
+    params = {k: v for k, v in (("market", market), ("roi", roi)) if v}
+    return ("&" + urlencode(params)) if params else ""
+
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Валюта показывается человеку под своим нынешним именем: TON внутри —
@@ -169,6 +189,8 @@ async def candidates_page(
     request: Request,
     confirm: int = 0,
     saved: str = "",
+    market: str = "",
+    roi: str = "",
     _: str = Depends(require_auth),
 ) -> HTMLResponse:
     """Список активных кандидатов и состояние сканера."""
@@ -179,9 +201,18 @@ async def candidates_page(
         base = session.query(Candidate).filter(
             Candidate.state == "pending", Candidate.expires_at > utcnow()
         )
-        # Сколько всего подходит — считаем отдельно: показывать часть
-        # молча значит скрывать находки, о существовании которых
-        # никто не узнает.
+        # Сколько всего подходит — считаем до фильтров, чтобы было
+        # видно, сколько скрыл сам фильтр, а не предел показа.
+        total_all = base.count()
+
+        if market:
+            base = base.filter(Candidate.market == market)
+        min_roi = ROI_RANGES.get(roi)
+        if min_roi is not None:
+            base = base.filter(Candidate.net_roi >= min_roi)
+
+        # Показывать часть молча значит скрывать находки, о
+        # существовании которых никто не узнает.
         total_pending = base.count()
         rows = (
             base.order_by(Candidate.net_roi.desc())
@@ -273,7 +304,14 @@ async def candidates_page(
             # стратегий нет, хотя они работали.
             "enabled_strategies": enabled_strategies,
             "total_pending": total_pending,
+            "total_all": total_all,
             "shown_limit": CANDIDATES_SHOWN,
+            "markets": [m.value for m in runtime.TRADABLE],
+            "roi_ranges": list(ROI_RANGES),
+            "market": market,
+            "roi": roi,
+            # Фильтр не должен слетать при нажатии «Купить».
+            "filter_query": _filter_query(market, roi),
             "running": bool(report and report.get("running")),
             "duration": int((report or {}).get("duration_sec") or 0),
             "states": recent_states,
@@ -355,8 +393,11 @@ async def candidate_buy(
     form = await request.form()
     if not form.get("confirmed"):
         # Первый шаг: просто разворачиваем строку с предупреждением.
+        keep = _filter_query(
+            str(form.get("market") or ""), str(form.get("roi") or "")
+        )
         return RedirectResponse(
-            f"/candidates?confirm={candidate_id}", status_code=303
+            f"/candidates?confirm={candidate_id}{keep}", status_code=303
         )
 
     result = await executor.execute_buy(
@@ -384,7 +425,10 @@ async def candidate_buy(
     else:
         note = f"❌ Покупка не выполнена: {result.get('detail')}"
 
-    return RedirectResponse(f"/candidates?saved={note}", status_code=303)
+    keep = _filter_query(
+        str(form.get("market") or ""), str(form.get("roi") or "")
+    )
+    return RedirectResponse(f"/candidates?saved={note}{keep}", status_code=303)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)

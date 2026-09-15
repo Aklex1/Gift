@@ -114,10 +114,12 @@ class PortalsAdapter(HttpMarketAdapter):
         )
         #: Кэш floor по атрибутам: коллекция -> (когда, значения).
         self._floor_cache: dict[str, tuple[dt.datetime, dict]] = {}
-        #: Когда последний раз продлевали токен. Адаптер живёт долго,
-        #: поэтому «продлевали уже» должно истекать: иначе одна неудача
-        #: навсегда выключила бы продление в этом процессе.
-        self._renewed_at = 0.0
+        #: Когда последний раз продлевали токен, по монотонным часам.
+        #: None — ни разу; ноль здесь не годится, потому что
+        #: time.monotonic() отсчитывается не от запуска процесса, и
+        #: «ноль» оказывался недавним моментом: первые две минуты
+        #: продление молча не срабатывало.
+        self._renewed_at: float | None = None
 
     # ------------------------------------------------------------------
     async def request(self, method: str, path: str, **kwargs):  # type: ignore[override]
@@ -136,7 +138,10 @@ class PortalsAdapter(HttpMarketAdapter):
         except AuthRequired:
             # Пауза между попытками продления: без неё поток отказов
             # превратился бы в поток запросов к Telegram и FloodWait.
-            if time.monotonic() - self._renewed_at < RENEW_COOLDOWN_SEC:
+            if (
+                self._renewed_at is not None
+                and time.monotonic() - self._renewed_at < RENEW_COOLDOWN_SEC
+            ):
                 raise
             self._renewed_at = time.monotonic()
 

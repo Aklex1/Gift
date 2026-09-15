@@ -540,3 +540,44 @@ def test_old_token_flagged_stale():
     secrets.set_value("PORTALS_AUTH", f"tma {_init_data(9 * 3600)}")
 
     assert webauth.token_state(Market.PORTALS)["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_first_renewal_not_blocked_by_cooldown(monkeypatch):
+    """Первое продление не должно попадать под паузу.
+
+    Отметка «когда продлевали» хранилась нулём, а time.monotonic()
+    считается не от запуска процесса: «ноль» оказывался недавним
+    моментом, и первые две минуты жизни процесса продление по 401
+    молча не срабатывало.
+    """
+    from app.adapters.base import AuthRequired
+    from app.adapters.portals import PortalsAdapter
+
+    adapter = PortalsAdapter(base_url="https://portals.tg/api", auth="tma старый")
+    assert adapter._renewed_at is None, "до первой попытки отметки быть не должно"
+
+    attempts = []
+
+    async def fake_super(self, method, path, **kwargs):
+        attempts.append(self.auth)
+        if len(attempts) == 1:
+            raise AuthRequired("portals: нет доступа (401)")
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "app.adapters.http_base.HttpMarketAdapter.request", fake_super
+    )
+
+    renewed = []
+
+    async def renew(_market):
+        renewed.append(True)
+        return {"ok": True, "market": "portals", "detail": "обновлён"}
+
+    monkeypatch.setattr(webauth, "renew", renew)
+
+    await adapter.request("GET", "/nfts/search")
+
+    assert renewed, "первое продление обязано состояться"
+    assert adapter._renewed_at is not None
