@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -160,6 +161,83 @@ def last_report() -> dict | None:
         return json.loads(raw)
     except (ValueError, TypeError):
         return None
+
+
+@dataclass(frozen=True)
+class Liveness:
+    """Жив ли сканер — один ответ на всех, кто его показывает.
+
+    Раньше это решалось дважды: в панели и в уведомлениях. Проверки
+    разошлись, и бот слал «сканер молчит» каждые три часа при исправном
+    воркере: он сравнивал возраст прохода с интервалом запуска, а проход
+    идёт дольше интервала. Панель то же самое считала правильно.
+
+    Отсюда правило: срок молчания выводится из того, сколько проход
+    занимает на самом деле, а не из того, как часто его просят начаться.
+    """
+
+    stale: bool
+    age_sec: int | None
+    running: bool
+    budget_sec: int
+    duration_sec: int
+
+    @property
+    def detail(self) -> str:
+        """Чем объяснить тревогу — в цифрах, а не в общих словах."""
+        if self.age_sec is None:
+            return "проходов ещё не было"
+        return (
+            f"последний проход начался {self.age_sec // 60} мин. назад; "
+            f"проход занимает {self.duration_sec} c, "
+            f"тревога после {self.budget_sec // 60} мин."
+        )
+
+
+def liveness(report: dict | None = None) -> Liveness:
+    """Насколько давно сканер подавал признаки жизни.
+
+    Признак жизни — **начало** прохода, а не его конец: пока проход
+    идёт, воркер работает, и молчанием это не является.
+
+    Срок терпения — три цикла, где цикл это большее из интервала и
+    длительности прохода. Когда проход длиннее интервала, расписание
+    задаёт он, и мерить по интервалу значит объявлять сбоем норму.
+    """
+    from app.services import runtime
+
+    data = last_report() if report is None else report
+    interval = runtime.scan_interval()
+    duration = int((data or {}).get("duration_sec") or 0)
+    budget = max(interval, duration) * 3
+    if not data:
+        return Liveness(
+            stale=False, age_sec=None, running=False,
+            budget_sec=budget, duration_sec=duration,
+        )
+
+    stamp = data.get("started_at") or data.get("finished_at")
+    if not stamp:
+        return Liveness(
+            stale=False, age_sec=None, running=bool(data.get("running")),
+            budget_sec=budget, duration_sec=duration,
+        )
+    try:
+        age = int((utcnow() - dt.datetime.fromisoformat(stamp)).total_seconds())
+    except (ValueError, TypeError):
+        return Liveness(
+            stale=False, age_sec=None, running=bool(data.get("running")),
+            budget_sec=budget, duration_sec=duration,
+        )
+
+    running = bool(data.get("running"))
+    return Liveness(
+        stale=age > budget,
+        age_sec=age,
+        running=running,
+        budget_sec=budget,
+        duration_sec=duration,
+    )
 
 
 async def refresh_fx(session: Session) -> Decimal | None:

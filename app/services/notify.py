@@ -371,14 +371,6 @@ async def _check_scanner() -> bool:
     if not report:
         return False
 
-    stamp = report.get("finished_at") or report.get("started_at")
-    if not stamp:
-        return False
-    try:
-        age = (dt.datetime.utcnow() - dt.datetime.fromisoformat(stamp)).total_seconds()
-    except (ValueError, TypeError):
-        return False
-
     if report.get("error"):
         return await alert(
             "scan",
@@ -388,13 +380,17 @@ async def _check_scanner() -> bool:
             cooldown=dt.timedelta(hours=3),
         )
 
-    if age > settings.scan_interval_sec * 5:
+    # Один и тот же расчёт, что и в панели. Когда он был написан
+    # дважды, версии разошлись: панель показывала исправный сканер, а
+    # бот каждые три часа слал тревогу — он сравнивал возраст прохода с
+    # интервалом запуска, хотя проход идёт дольше интервала.
+    state = scanner.liveness(report)
+    if state.stale:
         return await alert(
             "scan",
             "stale",
             f"⚠️ <b>Сканер молчит</b>\n\n"
-            f"Последний проход был {int(age // 60)} мин. назад при "
-            f"интервале {settings.scan_interval_sec} c.\n"
+            f"{state.detail}\n"
             f"Проверьте: <code>systemctl status gift-worker</code>",
             cooldown=dt.timedelta(hours=3),
         )

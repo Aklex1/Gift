@@ -23,10 +23,11 @@ from sqlalchemy import func
 from app.adapters.registry import capability_matrix, probe_all, tradable_markets
 from app.config import settings
 from app.db import session_scope
-from app.enums import Market, TradeMode, display_currency
+from app.enums import Currency, Market, TradeMode, display_currency
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Intent, Position, Strategy, utcnow
 from app.services import budget as budget_service
+from app.services import marketdata
 from app.services import secrets as secrets_module
 from app.services import gifts as gifts_service
 from app.services import portfolio
@@ -38,6 +39,21 @@ BASE_DIR = Path(__file__).resolve().parent
 #: доступны боту — просто не помещаются в таблицу, и об этом говорится
 #: прямо, а не умалчивается.
 CANDIDATES_SHOWN = 100
+
+
+def _money(raw) -> Decimal | None:
+    """Число из обоснования кандидата — или ничего.
+
+    В rationale цифры лежат строками: так они переживают JSON без
+    потери точности. Испорченное значение здесь превращается в «—», а
+    не в ноль: ноль прочитался бы как «прибыли нет».
+    """
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
 
 #: Диапазоны ROI для фильтра. Ключ — то, что видит человек; значение —
 #: нижняя граница. Порог именно нижний: интересует «не хуже чем», а не
@@ -361,6 +377,15 @@ async def candidates_page(
                     # Цена, ниже которой продажа уходит в минус. Рядом
                     # с ценой покупки делает строку самопроверяемой.
                     "break_even": (row.rationale or {}).get("break_even"),
+                    # Та же прибыль, но в деньгах, которыми меряют
+                    # результат. «+380 ★» не говорит, много это или
+                    # мало; «+4.2 $» говорит сразу.
+                    "pnl_stars": _money((row.rationale or {}).get("net_profit")),
+                    "pnl_usd": marketdata.to_usd(
+                        session,
+                        _money((row.rationale or {}).get("net_profit")) or Decimal(0),
+                        Currency.STARS,
+                    ) if (row.rationale or {}).get("net_profit") else None,
                     # Где выгоднее продать с учётом комиссий площадок.
                     "better_sale": (row.rationale or {}).get("better_sale"),
                     # Что сказал каждый источник по этому подарку.
@@ -384,25 +409,10 @@ async def candidates_page(
         ]
 
     report = scanner.last_report()
-    stale = False
-    age_sec = None
-    if report:
-        # Отчёт старше трёх интервалов означает, что воркер молчит.
-        stamp = report.get("finished_at") or report.get("started_at")
-        if stamp:
-            try:
-                age_sec = int(
-                    (utcnow() - dt.datetime.fromisoformat(stamp)).total_seconds()
-                )
-                # Проход может идти дольше интервала — это не сбой.
-                # Считать его сбоем значит отправлять человека искать
-                # поломку в исправном воркере.
-                running = bool(report.get("running"))
-                duration = int(report.get("duration_sec") or 0)
-                budget = max(runtime.scan_interval(), duration) * 3
-                stale = not running and age_sec > budget
-            except (ValueError, TypeError):
-                pass
+    # Тот же расчёт, что и в уведомлениях: живость сканера считается в
+    # одном месте, иначе панель и бот расходятся в показаниях.
+    state = scanner.liveness(report)
+    stale, age_sec = state.stale, state.age_sec
 
     rejections = []
     if report:

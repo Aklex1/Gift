@@ -219,6 +219,7 @@
       <th title="Насколько ниже справедливой цены">Разрыв</th>
       <th title="Ниже этой цены продажа уходит в минус">Ноль</th>
       <th>Продажа по</th><th>ROI</th>
+      <th class="num" title="Ожидаемая прибыль в деньгах, по курсу GRAM → доллар. USDT ≈ доллар">PnL, $</th>
       <th title="Ожидаемый срок продажи">Продажа</th>
       <th>Риск</th><th>Данные</th><th></th></tr>
   {% for c in items %}
@@ -243,6 +244,13 @@
       {% else %}<span class="muted">—</span>{% endif %}
     </td>
     <td class="{{ 'pos' if c.roi > 0 else 'neg' }}"><b>{{ '%.1f'|format(c.roi) }}%</b></td>
+    <td class="num {{ 'pos' if (c.pnl_usd or 0) > 0 else 'neg' }}">
+      {% if c.pnl_usd is not none %}
+        {{ '%+.2f'|format(c.pnl_usd|float) }}
+      {% else %}
+        <span class="muted" title="Нет свежего курса GRAM → доллар">—</span>
+      {% endif %}
+    </td>
     <td>
       {% if c.days_to_sell %}
         {{ c.days_to_sell }} дн.
@@ -263,7 +271,7 @@
   </tr>
   {% if c.sources %}
   <tr>
-    <td colspan="12" style="padding-top:0">
+    <td colspan="13" style="padding-top:0">
       <table class="reject" style="font-size:12px">
         <tr>
           <th>источник</th><th class="num">медиана</th><th class="num">floor</th>
@@ -288,7 +296,7 @@
 
   {% if c.sales and c.sales.sales %}
   <tr>
-    <td colspan="12" class="muted" style="padding-top:0;font-size:12px">
+    <td colspan="13" class="muted" style="padding-top:0;font-size:12px">
       📊 Состоявшихся сделок за месяц: <b>{{ c.sales.sales }}</b>
       ({{ c.sales.source }}) — дёшево уходило от {{ c.sales.low }} ★,
       обычно {{ c.sales.median }} ★, дорого до {{ c.sales.high }} ★.
@@ -308,7 +316,7 @@
 
   {% if c.better_sale %}
   <tr>
-    <td colspan="12" class="muted" style="padding-top:0;font-size:12px">
+    <td colspan="13" class="muted" style="padding-top:0;font-size:12px">
       💡 Выгоднее продать на <b>{{ c.better_sale.market }}</b>:
       по {{ c.better_sale.sale_price }} ★ это
       <b class="pos">{{ c.better_sale.net_roi }}</b> вместо
@@ -325,7 +333,7 @@
   {% endif %}
   {% if confirm == c.id %}
   <tr>
-    <td colspan="12">
+    <td colspan="13">
       <div class="banner danger">
         <div>
           <b>Списание {{ fmt(c.price) }} ★ за «{{ c.name }}».</b>
@@ -351,7 +359,7 @@
   </tr>
   {% endif %}
   {% else %}
-  <tr><td colspan="12" class="muted">Активных кандидатов нет</td></tr>
+  <tr><td colspan="13" class="muted">Активных кандидатов нет</td></tr>
   {% endfor %}
 </table>
 

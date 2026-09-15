@@ -146,6 +146,26 @@ def to_stars(session: Session, amount: Decimal, currency: Currency) -> Decimal |
     return amount * rate
 
 
+def to_usd(session: Session, amount: Decimal, currency: Decimal | Currency) -> Decimal | None:
+    """Привести сумму к долларам — для показа, а не для расчёта.
+
+    Расчёт везде идёт в Stars: это валюта, в которой названы цены
+    Telegram, и любой пересчёт добавляет к сделке ещё один курс.
+    Доллар нужен ровно для того, чтобы прибыль можно было прочитать:
+    «+380 ★» ничего не говорит о том, много это или мало.
+
+    Курс берётся тот же, что и везде, и с тем же требованием свежести.
+    Устаревший здесь безвреднее, чем в расчёте, но показывать по нему
+    доход значит называть цифру, которой неоткуда взяться.
+    """
+    if currency is Currency.USD:
+        return amount
+    rate = latest_fx(session, currency, Currency.USD, max_age=FX_MAX_AGE)
+    if rate is None:
+        return None
+    return amount * rate
+
+
 # ----------------------------------------------------------------------
 # Статистика
 # ----------------------------------------------------------------------

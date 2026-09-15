@@ -1482,6 +1482,23 @@ async def _spread(collection: str | None) -> int:
         f"{m.value} (комиссия продажи {fees[m]:.0%})" for m in seen
     ))
 
+    # Матрица цен — до всякого выбора направления. Без неё таблица
+    # связок отвечает «куда», но не даёт увидеть, почему площадка,
+    # которой в строках нет, туда не попала.
+    print("\nЦены приведены к Stars: площадки номинируют в разных валютах.")
+    print(f"\n{'модель':<18}" + "".join(f"{m.value:>12}" for m in seen))
+    for model in sorted(table):
+        per = table[model]
+        cells = []
+        for market in seen:
+            quote = per.get(market)
+            cells.append(
+                f"{quote.price_stars:>12.0f}"
+                if quote is not None and quote.price_stars
+                else f"{'—':>12}"
+            )
+        print(f"{model:<18}" + "".join(cells))
+
     if not rows:
         print("\nМодели нашлись только на одной площадке — сравнивать не с чем.")
         print("Подключите ещё площадку: панель → «Настройки» → токены.")
@@ -1505,6 +1522,9 @@ async def _spread(collection: str | None) -> int:
     print()
     if good:
         print(f"Связок в плюсе после комиссий: {len(good)} из {len(rows)}.")
+        print("Цена продажи здесь — текущий минимум заявок на площадке. Чтобы")
+        print("продать, вставать придётся под него, поэтому остаток в доли")
+        print("процента сделкой не является: его съест первый же шаг вниз.")
     else:
         print("После комиссий в плюсе ни одной — и это нормальный ответ.")
         print("Разница цен между площадками чаще всего и есть комиссия той,")
