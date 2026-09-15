@@ -300,8 +300,26 @@ async def execute_buy(
             )
         )
 
-    # --- 4. Внешний вызов (вне транзакции БД) ---
+    # --- 3b. Хватает ли денег ---
+    # Проверяем до отправки: отказ площадки из-за нехватки средств
+    # приходит уже как ошибка платежа, и отличить его от оборванной
+    # связи нельзя — сделка уходит в «исход неизвестен», хотя ничего
+    # не происходило. Здесь же отказ честный и резерв освобождается.
     adapter = _adapter_for(market, account_id)
+    shortage = await _balance_shortage(adapter, native_price, native_currency)
+    if shortage is not None:
+        with session_scope() as session:
+            intent = session.get(Intent, intent_id)
+            saga.transition(
+                session, intent, IntentStatus.CANCELLED, error=shortage
+            )
+            budget_service.release(session, reservation_id)
+            candidate = session.get(Candidate, candidate_id)
+            if candidate is not None:
+                candidate.state = "pending"
+        return {"ok": False, "detail": shortage, "intent_id": intent_id}
+
+    # --- 4. Внешний вызов (вне транзакции БД) ---
     idempotency_key = f"buy-{intent_id}"
     result: ExecutionResult | None = None
     unknown_detail: str | None = None
@@ -323,8 +341,15 @@ async def execute_buy(
     except AdapterError as exc:
         result = ExecutionResult(ok=False, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        log.exception("Непредвиденная ошибка покупки: %s", exc)
-        unknown_detail = f"непредвиденная ошибка: {exc}"
+        refusal = _clean_refusal(exc)
+        if refusal is not None:
+            # Площадка отказала явно и до списания: это обычный отказ,
+            # а не потерянный ответ. Называть его неизвестным значит
+            # пугать зря и держать резерв занятым.
+            result = ExecutionResult(ok=False, detail=refusal)
+        else:
+            log.exception("Непредвиденная ошибка покупки: %s", exc)
+            unknown_detail = f"непредвиденная ошибка: {exc}"
 
     # --- 5. Разбор исхода ---
     with session_scope() as session:
@@ -639,3 +664,224 @@ async def execute_cancel(position_id: int, *, actor: str = "system") -> dict:
             position.list_price = None
         return {"ok": True, "detail": "снято с продажи"}
     return {"ok": False, "detail": result.detail or "не удалось снять"}
+
+
+# ----------------------------------------------------------------------
+# Перенос подарка на другую площадку
+# ----------------------------------------------------------------------
+#: Ошибки Telegram, означающие отказ ДО списания. Для них исход
+#: определён: денег не тронули, и сверять нечего. Всё, чего нет в
+#: списке, остаётся неизвестным исходом — осторожность здесь важнее
+#: удобства.
+CLEAN_REFUSALS: dict[str, str] = {
+    "BALANCE_TOO_LOW": (
+        "не хватает Stars на балансе. Пополните баланс звёзд у "
+        "торгового аккаунта: TON и средства на площадках для покупки "
+        "в Telegram не годятся"
+    ),
+    "STARGIFT_RESELL_TOO_EARLY": "подарок ещё нельзя перепродавать",
+    "STARGIFT_NOT_AVAILABLE": "лот уже продан или снят",
+    "PRICE_CHANGED": "цена изменилась — покупка отменена",
+    "INVOICE_INVALID": "площадка отклонила счёт: лот недоступен",
+}
+
+
+def _clean_refusal(exc: BaseException) -> str | None:
+    """Явный отказ площадки, при котором деньги точно не двигались."""
+    text = str(exc).upper()
+    for code, explanation in CLEAN_REFUSALS.items():
+        if code in text:
+            return f"{explanation} ({code})"
+    return None
+
+
+async def _balance_shortage(
+    adapter, price: Decimal, currency: Currency
+) -> str | None:
+    """Проверить, хватает ли средств, до попытки покупки.
+
+    Returns:
+        Текст отказа, если денег заведомо мало; None — если хватает
+        либо баланс узнать не удалось (тогда решает площадка).
+    """
+    if not adapter.supports(Capability.BALANCE):
+        return None
+    try:
+        rows = await adapter.balance()
+    except Exception as exc:  # noqa: BLE001 - не смогли узнать, не мешаем
+        log.debug("Баланс перед покупкой недоступен: %s", exc)
+        return None
+
+    available = sum(
+        (Decimal(r.amount) for r in rows if r.currency is currency), Decimal(0)
+    )
+    if available >= price:
+        return None
+
+    from app.enums import display_currency
+
+    unit = display_currency(currency)
+    return (
+        f"не хватает средств: нужно {price} {unit}, на балансе "
+        f"{available} {unit}. Пополните баланс торгового аккаунта — "
+        f"средства на площадках и в @wallet для этой покупки не годятся"
+    )
+
+
+async def execute_transfer(
+    position_id: int, *, actor: str = "system", to_market: Market = Market.PORTALS
+) -> dict:
+    """Передать подарок площадке-получателю, чтобы продать его там.
+
+    Комиссия продажи на Portals около 2.5% против 20% на Telegram, и
+    перенос окупается на первой же сделке. Но операция необратима:
+    подарок уходит навсегда, и вернуть его нельзя ничем. Поэтому здесь
+    больше проверок, чем у покупки:
+
+    * перенос выключен по умолчанию и включается отдельно от торговли;
+    * получатель не угадывается, а берётся из настройки, и пустое
+      значение — отказ, а не «попробуем так»;
+    * обрыв связи после отправки не повторяется вслепую: подарок мог
+      уже уйти, и второй вызов подарил бы его дважды.
+
+    Returns:
+        ``ok=True`` — передан; ``ok=None`` — исход неизвестен;
+        ``ok=False`` — отказ с причиной.
+    """
+    from app.services import secrets
+
+    if not runtime.transfer_enabled():
+        return {
+            "ok": False,
+            "detail": (
+                "перенос подарков выключен — включается в панели, "
+                "раздел «Торговля»"
+            ),
+        }
+
+    deposit = (secrets.resolve("PORTALS_DEPOSIT", "") or "").strip()
+    if not deposit:
+        return {
+            "ok": False,
+            "detail": (
+                "не задан получатель переноса: панель → «Настройки» → "
+                "«Куда переносить подарки для Portals». Бот не подставляет "
+                "этот адрес сам — ошибка в нём означает потерю подарка"
+            ),
+        }
+
+    with session_scope() as session:
+        position = session.get(Position, position_id)
+        if position is None:
+            return {"ok": False, "detail": "позиция не найдена"}
+        if position.status is PositionStatus.SOLD:
+            return {"ok": False, "detail": "позиция уже продана"}
+        if position.custody_market is not Market.TELEGRAM:
+            return {
+                "ok": False,
+                "detail": f"подарок уже не в Telegram, а на {position.custody_market}",
+            }
+        if position.list_external_id:
+            return {
+                "ok": False,
+                "detail": "подарок выставлен на продажу — сначала снимите лот",
+            }
+        # Telegram не даёт передавать подарок сразу после покупки.
+        if position.resale_available_at and position.resale_available_at > utcnow():
+            return {
+                "ok": False,
+                "detail": (
+                    f"перенос доступен с "
+                    f"{position.resale_available_at:%d.%m.%Y %H:%M} UTC"
+                ),
+            }
+
+        # Передавать подарок можно по его slug — это стабильный
+        # идентификатор конкретного экземпляра в Telegram.
+        gift = session.get(Gift, position.gift_id)
+        external_id = (gift.slug if gift else None) or position.list_external_id
+        if not external_id:
+            return {
+                "ok": False,
+                "detail": (
+                    "у подарка нет slug — бот не знает, какой именно "
+                    "экземпляр передавать. Дождитесь сверки инвентаря "
+                    "(gift-cli inventory)"
+                ),
+            }
+
+        intent = saga.plan(
+            session,
+            kind=IntentKind.TRANSFER,
+            market=Market.TELEGRAM,
+            mode=TradeMode.SEMI,
+            external_id=external_id,
+            price=Decimal(0),
+            strategy_id=position.strategy_id,
+            gift_id=position.gift_id,
+            decision={"to": deposit, "position_id": position_id},
+        )
+        saga.transition(session, intent, IntentStatus.RESERVED)
+        saga.transition(session, intent, IntentStatus.SUBMITTED)
+        intent_id = intent.id
+
+    adapter = get_adapter(Market.TELEGRAM)
+    try:
+        result = await adapter.transfer_gift(external_id, deposit)
+    except OutcomeUnknown as exc:
+        # Подарок мог уже уйти. Повтор подарил бы его второй раз.
+        with session_scope() as session:
+            saga.mark_unknown(session, session.get(Intent, intent_id), str(exc))
+        return {
+            "ok": None,
+            "detail": (
+                f"связь оборвалась при переносе: {exc}. Повтор не "
+                "выполняется — проверьте инвентарь вручную"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 - причина уходит наверх
+        with session_scope() as session:
+            saga.transition(
+                session,
+                session.get(Intent, intent_id),
+                IntentStatus.FAILED,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return {"ok": False, "detail": f"перенос не выполнен: {exc}"}
+
+    with session_scope() as session:
+        saga.transition(
+            session,
+            session.get(Intent, intent_id),
+            IntentStatus.CONFIRMED,
+            external_ref=str(result.get("to") or deposit),
+        )
+        position = session.get(Position, position_id)
+        if position is not None:
+            # Подарок теперь у площадки: выставлять его нужно там.
+            position.custody_market = to_market
+            position.list_market = None
+            position.list_external_id = None
+        session.add(
+            AuditLog(
+                actor=actor,
+                action="position.transfer",
+                target=str(position_id),
+                payload={"to": deposit, "market": to_market.value},
+            )
+        )
+
+    log.warning(
+        "Позиция #%s перенесена на %s (получатель %s)",
+        position_id,
+        to_market.value,
+        deposit,
+    )
+    return {
+        "ok": True,
+        "detail": (
+            f"подарок передан получателю {deposit}. Он появится на "
+            f"{to_market.value} после зачисления площадкой — выставление "
+            f"станет возможно тогда же"
+        ),
+    }

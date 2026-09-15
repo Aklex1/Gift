@@ -334,6 +334,15 @@ async def scan_once() -> dict:
         Сводка: сколько лотов просмотрено и сколько кандидатов создано.
     """
     started = utcnow()
+    # Отмечаем, что проход пошёл. Без этого долгий скан выглядит в
+    # панели точно так же, как остановленный воркер, и человек идёт
+    # искать сбой, которого нет.
+    save_report(
+        {
+            "running": True,
+            "started_at": started.isoformat(timespec="seconds"),
+        }
+    )
     report: dict = {
         "listings": 0,
         "facts": 0,
@@ -446,6 +455,7 @@ async def scan_once() -> dict:
     report["candidates"] = created
     report["rejections"] = dict(rejections)
     report["finished_at"] = utcnow().isoformat(timespec="seconds")
+    report["duration_sec"] = int((utcnow() - started).total_seconds())
     if not created and rejections:
         top = rejections.most_common(1)[0][0]
         report["note"] = (

@@ -221,7 +221,13 @@ async def candidates_page(
                 age_sec = int(
                     (utcnow() - dt.datetime.fromisoformat(stamp)).total_seconds()
                 )
-                stale = age_sec > settings.scan_interval_sec * 3
+                # Проход может идти дольше интервала — это не сбой.
+                # Считать его сбоем значит отправлять человека искать
+                # поломку в исправном воркере.
+                running = bool(report.get("running"))
+                duration = int(report.get("duration_sec") or 0)
+                budget = max(settings.scan_interval_sec, duration) * 3
+                stale = not running and age_sec > budget
             except (ValueError, TypeError):
                 pass
 
@@ -243,6 +249,8 @@ async def candidates_page(
             "stale": stale,
             "age_sec": age_sec,
             "rejections": rejections,
+            "running": bool(report and report.get("running")),
+            "duration": int((report or {}).get("duration_sec") or 0),
             "states": recent_states,
             "scan_interval": settings.scan_interval_sec,
             "fmt": gifts_service.format_stars,

@@ -664,3 +664,41 @@ class TelegramAdapter(MarketAdapter):
 
     async def close(self) -> None:
         """Соединение живёт в шлюзе и закрывается вместе с ним."""
+
+
+    async def transfer_gift(self, saved_id: str, to_peer: str) -> dict:
+        """Передать уникальный подарок другому получателю.
+
+        Это единственная необратимая операция во всём адаптере: подарок
+        уходит навсегда, и ошибиться получателем нельзя. Поэтому здесь
+        нет ни значений по умолчанию, ни догадок — получатель приходит
+        снаружи и уже проверен вызывающим.
+
+        Args:
+            saved_id: идентификатор подарка в инвентаре аккаунта.
+            to_peer: получатель (@имя или id).
+
+        Returns:
+            Кому ушёл подарок и чем ответил Telegram.
+
+        Raises:
+            OutcomeUnknown: связь оборвалась после отправки — повторять
+                вслепую нельзя, подарок мог уже уйти.
+        """
+        self._require(Capability.TRANSFER)
+        from telethon.tl import functions, types
+
+        client = await self.gateway.client()
+        peer = await client.get_input_entity(to_peer)
+
+        result = await self.gateway.call(
+            functions.payments.TransferStarGiftRequest(
+                stargift=types.InputSavedStarGiftUser(msg_id=int(saved_id))
+                if str(saved_id).isdigit()
+                else types.InputSavedStarGiftSlug(slug=str(saved_id)),
+                to_id=peer,
+            ),
+            write=True,
+        )
+        log.warning("Подарок %s передан получателю %s", saved_id, to_peer)
+        return {"ok": True, "to": str(to_peer), "result": type(result).__name__}

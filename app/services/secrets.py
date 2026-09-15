@@ -198,6 +198,21 @@ FIELDS: tuple[SecretField, ...] = (
         hint="api.getgems.io/public-api/docs",
         group="Площадки",
     ),
+    # --- Перенос подарков ---
+    SecretField(
+        key="PORTALS_DEPOSIT",
+        title="Куда переносить подарки для Portals",
+        hint="Аккаунт, которому Portals поручает приём подарков "
+             "(@имя или id). Узнать можно только в самом "
+             "мини-приложении Portals: «Пополнить» → «Перевести "
+             "подарок». БОТ НЕ УГАДЫВАЕТ ЭТОТ АДРЕС. Отправленный "
+             "подарок не возвращается — сверьте получателя, прежде "
+             "чем включать перенос.",
+        secret=False,
+        group="Перенос подарков",
+        placeholder="@GiftsToPortals",
+    ),
+
     # --- Канал находок ---
     SecretField(
         key="FEED_CHANNEL",

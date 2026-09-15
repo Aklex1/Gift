@@ -60,11 +60,26 @@
   </div>
   {% endif %}
 
-  {% if stale %}
+  {% if running %}
+  <div class="scan-note muted">
+    Проход идёт прямо сейчас — цифры выше от предыдущего.
+  </div>
+  {% elif duration and duration > scan_interval %}
   <div class="scan-note warn-text">
-    <b>Отчёт устарел.</b> Сканер должен обновлять его раз в
-    {{ scan_interval }} c, но данные старше. Скорее всего воркер
-    остановлен или падает:<br>
+    <b>Проход занимает {{ duration }} c, а интервал {{ scan_interval }} c.</b>
+    Воркер исправен, но не успевает: следующий запуск пропускается, пока
+    идёт предыдущий (в журнале — <code>maximum number of running
+    instances reached</code>). Это не поломка, но и не бесплатно —
+    находки стареют.<br>
+    Лечится одним из двух: увеличить <code>SCAN_INTERVAL_SEC</code> до
+    {{ (duration * 1.5) | round | int }} c, чтобы расписание совпало с
+    реальностью, либо сузить список коллекций в стратегии — тогда
+    проход станет короче.
+  </div>
+  {% elif stale %}
+  <div class="scan-note warn-text">
+    <b>Отчёт устарел.</b> Последний проход закончился давно, и новый не
+    начинался. Проверьте воркер:<br>
     <code>systemctl status gift-worker</code><br>
     <code>journalctl -u gift-worker -n 50 --no-pager</code>
   </div>
