@@ -473,6 +473,7 @@ def cheap_ceiling(
                 collection=dto.gift.collection,
                 model=model,
                 market=market,
+                exclude=(dto.market, dto.external_id),
             )
             offer(own.floor_price)
             offer(own.median_price)
@@ -591,7 +592,13 @@ async def gather_sources(
     # таких лотов реально выставлено. Площадки этого числа не дают, а
     # без него ликвидность в риске считать не на чем.
     own = marketdata.snapshot_for(
-        session, collection=dto.gift.collection, model=dto.gift.model
+        session,
+        collection=dto.gift.collection,
+        model=dto.gift.model,
+        # Сам оцениваемый лот своим наблюдением не считается: иначе
+        # floor выборки равен его же цене, и в обосновании это выглядит
+        # как независимое подтверждение, которым не является.
+        exclude=(dto.market, dto.external_id),
     )
 
     # 1. Официальная оценка Telegram — доступна по любому подарку,
@@ -782,6 +789,7 @@ async def snapshot_for_listing(
                             session,
                             collection=dto.gift.collection,
                             model=dto.gift.model,
+                            exclude=(dto.market, dto.external_id),
                         )
                         snapshot = marketdata.snapshot_from_attribute_floor(
                             collection=dto.gift.collection,

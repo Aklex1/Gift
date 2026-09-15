@@ -273,6 +273,7 @@ def snapshot_for(
     model: str | None = None,
     window: dt.timedelta = FRESH_WINDOW,
     market: "Market | None" = None,
+    exclude: "tuple[Market, str] | None" = None,
 ) -> MarketSnapshot:
     """Построить срез рынка по накопленным фактам и активным лотам.
 
@@ -281,6 +282,11 @@ def snapshot_for(
             продажу на конкретной площадке: цена одного и того же
             подарка на Telegram и Portals различается, и брать общий
             срез за цену продажи на Portals значило бы выдумывать её.
+        exclude: лот (площадка, внешний id), который не считать своим
+            наблюдением. Оцениваемый лот сам лежит в таблице активных,
+            и без этого он попадал в собственную выборку: floor
+            выборки равнялся его же цене, а в обосновании это
+            выглядело как независимое подтверждение.
     """
     since = utcnow() - window
 
@@ -312,6 +318,13 @@ def snapshot_for(
         listing_query = listing_query.filter(Listing.gift.has(model=model))
     if market is not None:
         listing_query = listing_query.filter(Listing.market == market)
+    if exclude is not None:
+        listing_query = listing_query.filter(
+            ~(
+                (Listing.market == exclude[0])
+                & (Listing.external_id == exclude[1])
+            )
+        )
     active = listing_query.all()
 
     floor = min((Decimal(item.price_stars) for item in active if item.price_stars), default=None)
