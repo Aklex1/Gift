@@ -80,6 +80,28 @@ def dig(data: Any, *candidates: str) -> list:
     return []
 
 
+def ascii_header(value: str) -> str:
+    """Привести значение заголовка к тому виду, в каком его шлёт браузер.
+
+    Токен площадки — это initData мини-приложения, и Telegram отдаёт
+    его с процентным кодированием: имя пользователя внутри `user=`
+    выглядит как %D0%92%D0%B0... Но DevTools показывает заголовки уже
+    расшифрованными, и скопированное оттуда значение содержит живую
+    кириллицу. В HTTP-заголовок она не помещается — httpx падает с
+    UnicodeEncodeError, и площадка отваливается целиком.
+
+    Кодируем обратно только не-ASCII: всё остальное сервер и так
+    разберёт, а подпись считается по расшифрованным значениям, поэтому
+    она не ломается.
+    """
+    if value.isascii():
+        return value
+
+    from urllib.parse import quote
+
+    return "".join(c if c.isascii() else quote(c, safe="") for c in value)
+
+
 class HttpMarketAdapter(MarketAdapter):
     """Адаптер площадки, работающей по HTTP."""
 
@@ -103,7 +125,7 @@ class HttpMarketAdapter(MarketAdapter):
             "Accept": "application/json",
         }
         if self.auth:
-            headers[self.auth_header] = self.auth
+            headers[self.auth_header] = ascii_header(self.auth)
         return headers
 
     async def _http(self) -> httpx.AsyncClient:

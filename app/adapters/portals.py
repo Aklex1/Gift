@@ -31,7 +31,7 @@ from app.adapters.base import (
     ListingDTO,
     SaleDTO,
 )
-from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
+from app.adapters.http_base import HttpMarketAdapter, ascii_header, dig, first, to_decimal
 from app.config import settings
 from app.enums import Currency, Market
 from app.services import runtime, secrets
@@ -151,7 +151,9 @@ class PortalsAdapter(HttpMarketAdapter):
         }
         if self.auth:
             # Значение копируется целиком вместе с префиксом "tma ".
-            headers["Authorization"] = self.auth
+            # ascii_header чинит токен, скопированный из DevTools в
+            # расшифрованном виде: кириллица в заголовок не проходит.
+            headers["Authorization"] = ascii_header(self.auth)
         return headers
 
     @staticmethod

@@ -31,7 +31,7 @@ from app.adapters.base import (
     ListingDTO,
     SaleDTO,
 )
-from app.adapters.http_base import HttpMarketAdapter, dig, first, to_decimal
+from app.adapters.http_base import HttpMarketAdapter, ascii_header, dig, first, to_decimal
 from app.config import settings
 from app.services import runtime
 from app.services import secrets
@@ -90,7 +90,7 @@ class MrktAdapter(HttpMarketAdapter):
             "Referer": CDN_REFERER,
         }
         if self.auth:
-            headers["Authorization"] = self.auth
+            headers["Authorization"] = ascii_header(self.auth)
         return headers
 
     async def ensure_token(self, *, force: bool = False) -> bool:

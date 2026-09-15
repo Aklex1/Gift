@@ -749,6 +749,36 @@ def cmd_doctor() -> int:
                 f"Исправьте командой: gift-cli env-sync"
             )
 
+    # Бюджет меньше самого дешёвого найденного лота — стратегия
+    # работает вхолостую: кандидаты находятся, купить не на что.
+    try:
+        from app.db import session_scope
+        from app.models import Budget, Candidate, Strategy
+
+        with session_scope() as session:
+            for item in session.query(Strategy).filter_by(is_enabled=True).all():
+                budget = (
+                    session.get(Budget, item.budget_id) if item.budget_id else None
+                )
+                cap = Decimal(budget.hard_cap) if budget else Decimal(0)
+                cheapest = (
+                    session.query(Candidate.price_stars)
+                    .filter_by(strategy_id=item.id, state="pending")
+                    .order_by(Candidate.price_stars.asc())
+                    .limit(1)
+                    .scalar()
+                )
+                if cheapest is None or cap <= 0:
+                    continue
+                if cap < Decimal(cheapest):
+                    warnings.append(
+                        f"стратегия {item.name}: бюджет {cap:.0f} Stars меньше "
+                        f"самого дешёвого найденного лота ({Decimal(cheapest):.0f} "
+                        f"Stars) — покупать не на что"
+                    )
+    except Exception:  # noqa: BLE001 - диагностика не должна ронять doctor
+        pass
+
     print()
     for item in warnings:
         print(f"⚠ {item}")
