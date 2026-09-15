@@ -114,7 +114,7 @@ def shelf_line(attributes: list[dict]) -> str:
     return line
 
 
-def render(
+def lines(
     *,
     name: str,
     market: Market,
@@ -129,60 +129,64 @@ def render(
     profit_usd: Decimal | None,
     rationale: dict,
     days_to_sell: float | None = None,
-) -> str:
-    """Собрать карточку находки.
+) -> list[tuple[str, str]]:
+    """Строки карточки: значок и текст, без разметки.
+
+    Отдельно от отправки намеренно. Карточку показывают и бот, и
+    панель, а две копии одной логики расходятся — это уже случилось
+    сегодня с проверкой «сканер молчит», которая была написана дважды
+    и в одном из мест осталась старой.
 
     Args:
         rationale: обоснование кандидата как его сохранил сканер.
 
     Returns:
-        Текст для Telegram с разметкой HTML.
+        Пары «значок, текст». Пустой значок — строка-продолжение.
     """
     attributes = rationale.get("attributes") or []
     sales = rationale.get("sales") or {}
+    out: list[tuple[str, str]] = [("🎁", f"{name} · {market.value}")]
 
-    head = f"🔎 <b>Находка</b>\n🎁 <b>{name}</b> · {market.value}"
     traits = " / ".join(x for x in (model, backdrop) if x)
     if traits:
-        head += f"\n{traits}"
-
-    rows = [head]
+        out.append(("", traits))
 
     if price_native is not None:
-        price = f"💰 {price_native} {display_currency(currency)}"
+        price = f"{price_native} {display_currency(currency)}"
         if price_usd is not None:
             price += f" · {price_usd:.2f} $"
-        rows.append(price)
+        out.append(("💰", price))
 
-    forecast = (
-        f"⭐ Прогноз: {stars(num(rationale.get('fair_value')))} ★"
+    out.append((
+        "⭐",
+        f"Прогноз: {stars(num(rationale.get('fair_value')))} ★"
         f" · продажа: {stars(num(rationale.get('expected_sale_price')))} ★"
-        f" · ноль: {stars(num(rationale.get('break_even')))} ★"
-    )
-    rows.append(forecast)
+        f" · ноль: {stars(num(rationale.get('break_even')))} ★",
+    ))
 
     roi = num(rationale.get("net_roi"))
-    profit = "📈 Прибыль: "
+    profit = "Прибыль: "
     profit += "—" if profit_usd is None else f"{profit_usd:+.2f} $"
     if roi is not None:
         profit += f" · запас: {roi:+.1%}"
     risk = rationale.get("risk_score")
     if risk is not None:
         profit += f" · риск: {risk}"
-    rows.append(profit)
+    out.append(("📈", profit))
 
     line = attribute_line(attributes)
     if line:
-        rows.append(f"🎯 {line}")
+        out.append(("🎯", line))
     shelf = shelf_line(attributes)
     if shelf:
-        rows.append(f"🧭 Полка: {shelf}")
+        out.append(("🧭", f"Полка: {shelf}"))
 
     hint = rationale.get("better_sale") or {}
     if hint.get("market"):
-        rows.append(
-            f"💱 Выгоднее продать на {hint['market']}: {hint.get('net_roi', '')}"
-        )
+        out.append((
+            "💱",
+            f"Выгоднее продать на {hint['market']}: {hint.get('net_roi', '')}",
+        ))
 
     tail = []
     if sales.get("sales"):
@@ -192,15 +196,24 @@ def render(
     if sales.get("source"):
         tail.append(f"источник {sales['source']}")
     if tail:
-        rows.append("⏱ " + " · ".join(tail))
+        out.append(("⏱", " · ".join(tail)))
 
     if double_margin(attributes):
-        rows.append("💎 Двойной запас: цену держат два признака, а не один")
+        out.append(("💎", "Двойной запас: цену держат два признака, а не один"))
 
     for url in links(
         collection=collection, number=number,
         market=market, external_id=external_id,
     ):
-        rows.append(f"🔗 {url}")
+        out.append(("🔗", url))
+    return out
 
-    return "\n".join(rows)
+
+def render(**kwargs) -> str:
+    """Карточка для Telegram — те же строки, с разметкой HTML."""
+    rows = lines(**kwargs)
+    body = []
+    for i, (icon, text) in enumerate(rows):
+        prefix = f"{icon} " if icon else ""
+        body.append(f"{prefix}<b>{text}</b>" if i == 0 else f"{prefix}{text}")
+    return "🔎 <b>Находка</b>\n" + "\n".join(body)

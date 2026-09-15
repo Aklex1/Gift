@@ -168,3 +168,40 @@ def test_gift_without_a_number_has_no_gift_link():
     text = _card(number=None, market=Market.PORTALS)
 
     assert "t.me/nft" not in text
+
+
+# --- одни строки на бота и на панель ------------------------------------
+
+
+def test_panel_and_bot_show_the_same_lines():
+    """Панель и бот берут строки из одного места.
+
+    Две копии одной логики расходятся — это уже случилось с проверкой
+    «сканер молчит», которая была написана дважды, и одна из копий
+    осталась старой. Здесь расхождение ловится сразу.
+    """
+    common = dict(
+        name="Light Sword #1", market=Market.MRKT, external_id="x",
+        collection="Light Sword", number=1, model="Bifrost", backdrop=None,
+        price_native=Decimal("6.17"), currency=Currency.TON,
+        price_usd=Decimal("20"), profit_usd=Decimal("5"),
+        rationale={"net_roi": "0.26", "fair_value": "2495"},
+    )
+
+    rows = cardtext.lines(**common)
+    text = cardtext.render(**common)
+
+    for _icon, line in rows:
+        assert line in text
+
+
+def test_lines_carry_no_markup():
+    """Строки отдаются без разметки: её добавляет тот, кто показывает."""
+    rows = cardtext.lines(
+        name="Light Sword #1", market=Market.MRKT, external_id="x",
+        collection="Light Sword", number=1, model="Bifrost", backdrop=None,
+        price_native=Decimal("6.17"), currency=Currency.TON,
+        price_usd=None, profit_usd=None, rationale={"net_roi": "0.26"},
+    )
+
+    assert all("<" not in line for _icon, line in rows)

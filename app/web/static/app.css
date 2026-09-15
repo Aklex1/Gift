@@ -233,3 +233,17 @@ button.mini {
   background: #2a2f3a; color: var(--text);
 }
 button.mini:hover { background: var(--accent); }
+
+/* Карточка находки — тот же набор строк, что бот шлёт в Telegram.
+   Таблица отвечает «что нашлось», карточка — «почему это дёшево».
+   Имя .find-card, а не .card: .card уже занят плитками сводки. */
+.find-card {
+    border-left: 3px solid var(--border);
+    padding: 6px 0 6px 10px;
+    margin: 4px 0 8px;
+    font-size: 13px;
+    line-height: 1.55;
+}
+.find-line { display: flex; gap: 6px; }
+.find-icon { width: 16px; flex: none; text-align: center; }
+.find-card a { word-break: break-all; }

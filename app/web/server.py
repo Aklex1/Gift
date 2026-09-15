@@ -27,6 +27,7 @@ from app.enums import Currency, Market, TradeMode, display_currency
 from app.logging_conf import setup_logging
 from app.models import AuditLog, Budget, Candidate, Gift, Intent, Position, Strategy, utcnow
 from app.services import budget as budget_service
+from app.services import cardtext
 from app.services import marketdata
 from app.services import secrets as secrets_module
 from app.services import gifts as gifts_service
@@ -377,6 +378,32 @@ async def candidates_page(
                     # Цена, ниже которой продажа уходит в минус. Рядом
                     # с ценой покупки делает строку самопроверяемой.
                     "break_even": (row.rationale or {}).get("break_even"),
+                    # Карточка находки — та же, что бот присылает в
+                    # Telegram. Строки берутся из одного места: две
+                    # копии одной логики расходятся, и сегодня это уже
+                    # случилось с проверкой «сканер молчит».
+                    "card": cardtext.lines(
+                        name=gifts_service.describe(gift) if gift else "?",
+                        market=row.market,
+                        external_id=row.listing_external_id,
+                        collection=gift.collection if gift else None,
+                        number=gift.number if gift else None,
+                        model=gift.model if gift else None,
+                        backdrop=gift.backdrop if gift else None,
+                        price_native=_money(row.price_native),
+                        currency=row.native_currency,
+                        price_usd=marketdata.to_usd(
+                            session, Decimal(row.price_stars), Currency.STARS
+                        ),
+                        profit_usd=marketdata.to_usd(
+                            session,
+                            _money((row.rationale or {}).get("net_profit"))
+                            or Decimal(0),
+                            Currency.STARS,
+                        ) if (row.rationale or {}).get("net_profit") else None,
+                        rationale=row.rationale or {},
+                        days_to_sell=row.days_to_sell,
+                    ),
                     # Та же прибыль, но в деньгах, которыми меряют
                     # результат. «+380 ★» не говорит, много это или
                     # мало; «+4.2 $» говорит сразу.
