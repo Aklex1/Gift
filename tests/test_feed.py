@@ -248,3 +248,128 @@ def test_top_collections_limited(session):
 def test_empty_feed_gives_nothing(session):
     """Пустой канал — пустой список, а не ошибка."""
     assert feed.top_collections(session) == []
+
+
+# --- второй формат постов ---------------------------------------------
+
+#: Настоящий пост: название через пробел, номер после решётки, глагол
+#: меняется от строки к строке.
+PROSE_POST = """Скоро топ-3 Lucky Buy обновится! Смотрим что было вчера 🤔
+
+1️⃣Loot Bag #3462 выкупили за 137.88 GRAM при цене 💎 499.8 GRAM
+
+2️⃣ Precious Peach #2515 забрали за 63.78 GRAM при цене 💎 326.4 GRAM
+
+3️⃣Signet Ring #6267 приобрели за 100.42 GRAM при цене 💎 224 GRAM"""
+
+
+def test_prose_post_parses():
+    """Разбирается формат «название #номер выкупили за X при цене Y»."""
+    finds = feed.parse_post(PROSE_POST)
+
+    assert len(finds) == 3
+    assert [f.collection for f in finds] == [
+        "Loot Bag",
+        "Precious Peach",
+        "Signet Ring",
+    ]
+    assert [f.number for f in finds] == [3462, 2515, 6267]
+
+
+def test_prose_prices_exact():
+    """Цена покупки и цена лота не путаются местами."""
+    first = feed.parse_post(PROSE_POST)[0]
+
+    assert first.price == Decimal("137.88")
+    assert first.value == Decimal("499.8")
+
+
+def test_prose_verbs_vary():
+    """Глагол меняется от строки к строке и разбору не мешает."""
+    text = (
+        "A #1 урвали за 1 GRAM при цене 💎 10 GRAM "
+        "B #2 приобрели за 2 GRAM при цене 💎 30 GRAM"
+    )
+    assert len(feed.parse_post(text)) == 2
+
+
+def test_multi_word_name_kept_as_is():
+    """Название с пробелами не разворачивается по заглавным буквам."""
+    finds = feed.parse_post("Precious Peach #1 забрали за 5 GRAM при цене 💎 20 GRAM")
+
+    assert finds[0].collection == "Precious Peach"
+
+
+def test_no_double_counting_between_formats():
+    """Пост, подходящий под оба образца, не даёт находку дважды."""
+    text = "Loot Bag #1 выкупили за 10 GRAM при цене 💎 40 GRAM"
+    finds = feed.parse_post(text)
+
+    assert len(finds) == 1
+
+
+# --- защита от пересчёта валют, выданного за скидку -------------------
+
+#: Пост другого канала: «купили за» в GRAM, «цена» в Stars. Одна и та
+#: же сумма показана дважды, и выглядит это как скидка в 87 раз.
+UNIT_MISMATCH_POST = """Перед обновлением топ-3 Lucky Buy, взглянем на вчерашний 🤔
+
+1️⃣Heroic Helmet #1292 забрали за 2.14 GRAM при цене 💎 185.66 GRAM
+
+2️⃣Loot Bag #4595 выкупили за 1.47 GRAM при цене 💎 127.5 GRAM
+
+3️⃣Astral Shard #2101 урвали за 1.41 GRAM при цене 💎 122.4 GRAM"""
+
+
+def test_unit_mismatch_detected():
+    """Одинаковое отношение у всех находок — это курс, а не удача.
+
+    Три разные покупки не могут случайно лечь в одно отношение с
+    точностью до долей процента.
+    """
+    finds = feed.parse_post(UNIT_MISMATCH_POST)
+    ratio = feed.looks_like_unit_mismatch(finds)
+
+    assert ratio is not None
+    assert 86 < ratio < 88
+
+
+def test_real_discounts_pass():
+    """Настоящие скидки разные — такой пост проходит."""
+    finds = feed.parse_post(PROSE_POST)
+
+    assert feed.looks_like_unit_mismatch(finds) is None
+
+
+def test_two_finds_are_not_enough_to_judge():
+    """На двух числах совпадение может быть случайным — не отбрасываем."""
+    text = "A #1 за 1 GRAM при цене 💎 10 GRAM B #2 за 2 GRAM при цене 💎 20 GRAM"
+    finds = feed.parse_post(text)
+
+    assert len(finds) == 2
+    assert feed.looks_like_unit_mismatch(finds) is None
+
+
+def test_small_spread_still_counts_as_mismatch():
+    """Разброс в пределах округления постов — всё равно один курс."""
+    text = (
+        "A #1 за 1 GRAM при цене 💎 86.7 GRAM "
+        "B #2 за 2 GRAM при цене 💎 173.6 GRAM "
+        "C #3 за 3 GRAM при цене 💎 260.1 GRAM"
+    )
+    assert feed.looks_like_unit_mismatch(feed.parse_post(text)) is not None
+
+
+def test_wide_spread_is_not_mismatch():
+    """Заметно разные отношения — это настоящие скидки."""
+    text = (
+        "A #1 за 10 GRAM при цене 💎 20 GRAM "
+        "B #2 за 10 GRAM при цене 💎 50 GRAM "
+        "C #3 за 10 GRAM при цене 💎 35 GRAM"
+    )
+    assert feed.looks_like_unit_mismatch(feed.parse_post(text)) is None
+
+
+def test_empty_list_is_not_mismatch():
+    """Пустой пост не должен объявляться подозрительным."""
+    assert feed.looks_like_unit_mismatch([]) is None

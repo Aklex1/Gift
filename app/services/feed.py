@@ -54,6 +54,21 @@ FEED_CURRENCY = Currency.TON
 #:     😍 SpringBasket-40494 - за 16.43 GRAM (Оценка: 26.00 GRAM)
 #: Пробелы и переносы строк заранее схлопнуты, поэтому здесь \s*
 #: достаточно: в постах цена регулярно отрывается от слова GRAM.
+#: Второй распространённый формат, с названием через пробел и номером
+#: после решётки:
+#:     1️⃣ Loot Bag #3462 выкупили за 137.88 GRAM при цене 💎 499.8 GRAM
+#: Глагол меняется от поста к посту («забрали», «урвали», «приобрели»),
+#: поэтому между номером и ценой допускается любое слово.
+PROSE_RE = re.compile(
+    r"(?P<name>[A-Za-z][A-Za-z'\- ]*?)"       # Loot Bag
+    r"\s*#(?P<number>\d+)"                     # #3462
+    r"[^\d]{1,40}?за\s*"                       # выкупили за
+    r"(?P<price>\d+(?:[.,]\d+)?)\s*GRAM"       # 137.88 GRAM
+    r"[^\d]{1,40}?"                            # при цене 💎
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*GRAM",      # 499.8 GRAM
+    re.IGNORECASE,
+)
+
 FIND_RE = re.compile(
     r"(?P<name>[A-Za-z][A-Za-z0-9]*)"        # SpringBasket
     r"\s*[-–—]\s*(?P<number>\d+)"            # -40494
@@ -138,27 +153,76 @@ def parse_post(text: str, *, known: dict[str, str] | None = None) -> list[Find]:
     """
     lookup = known or {}
     finds: list[Find] = []
+    body = normalize(text)
+    seen: set[tuple[str, int]] = set()
 
-    for match in FIND_RE.finditer(normalize(text)):
-        price = _decimal(match.group("price"))
-        value = _decimal(match.group("value"))
-        if price is None or value is None or price <= 0:
-            continue
+    for pattern in (FIND_RE, PROSE_RE):
+        for match in pattern.finditer(body):
+            price = _decimal(match.group("price"))
+            value = _decimal(match.group("value"))
+            if price is None or value is None or price <= 0:
+                continue
 
-        raw_name = match.group("name")
-        collection = lookup.get(raw_name.lower()) or split_camel(raw_name)
+            raw_name = match.group("name").strip()
+            key = re.sub(r"[^a-z0-9]", "", raw_name.lower())
+            collection = lookup.get(key) or lookup.get(raw_name.lower())
+            if collection is None:
+                # В слитном написании разворачиваем по заглавным буквам,
+                # в обычном — оставляем как есть.
+                collection = raw_name if " " in raw_name else split_camel(raw_name)
 
-        finds.append(
-            Find(
-                collection=collection,
-                number=int(match.group("number")),
-                price=price,
-                value=value,
-                realized=match.group("kind").lower() == "продано",
+            number = int(match.group("number"))
+            if (collection, number) in seen:
+                continue
+            seen.add((collection, number))
+
+            groups = match.groupdict()
+            finds.append(
+                Find(
+                    collection=collection,
+                    number=number,
+                    price=price,
+                    value=value,
+                    # Во втором формате исход не указан: там пишут только
+                    # «выкупили за столько при цене столько».
+                    realized=(groups.get("kind") or "").lower() == "продано",
+                )
             )
-        )
 
     return finds
+
+
+#: Насколько близкими должны быть отношения «цена/оценка», чтобы
+#: счесть их одним и тем же числом. 2% — с запасом на округление в
+#: постах, но заметно меньше разброса настоящих скидок.
+UNIT_TOLERANCE = Decimal("0.02")
+
+
+def looks_like_unit_mismatch(finds: list[Find]) -> Decimal | None:
+    """Не пересчёт ли это валют, выданный за скидку.
+
+    Встречается в каналах, где «цена» напечатана в Stars, а «купили
+    за» — в GRAM. Тогда одна и та же сумма показана дважды, отношение
+    у всех находок одинаковое и равно курсу, а никакой скидки нет.
+
+    Настоящие скидки так не выглядят: они разные от лота к лоту.
+    Поэтому одинаковое отношение у трёх и более находок — верный
+    признак единиц, а не удачи.
+
+    Returns:
+        Общее отношение, если оно одно на все находки; иначе None.
+    """
+    ratios = [f.margin for f in finds if f.price > 0 and f.margin > 0]
+    if len(ratios) < 3:
+        # На двух числах совпадение может быть случайным.
+        return None
+
+    smallest, largest = min(ratios), max(ratios)
+    if smallest <= 0:
+        return None
+    if (largest - smallest) / smallest > UNIT_TOLERANCE:
+        return None
+    return sum(ratios) / len(ratios)
 
 
 def known_collections(session: Session) -> dict[str, str]:
@@ -369,10 +433,21 @@ async def sync(*, detached: bool = False) -> dict:
     with session_scope() as session:
         lookup = known_collections(session)
         for message_id, posted_at, text in posts:
-            if HASHTAG not in text:
+            if HASHTAG not in text and not PROSE_RE.search(normalize(text)):
                 continue
             report["posts"] += 1
             finds = parse_post(text, known=lookup)
+
+            ratio = looks_like_unit_mismatch(finds)
+            if ratio is not None:
+                # Не находки, а одна и та же сумма в двух валютах.
+                # Записать их значило бы поверить в скидку, которой нет.
+                report.setdefault("skipped", []).append(
+                    f"сообщение {message_id}: у всех находок одинаковое "
+                    f"отношение {ratio:.1f}x — это пересчёт валют, а не скидка"
+                )
+                continue
+
             report["finds"] += len(finds)
             report["added"] += store_finds(session, message_id, posted_at, finds)
 
