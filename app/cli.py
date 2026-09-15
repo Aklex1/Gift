@@ -1347,12 +1347,17 @@ async def _value(slug: str | None) -> int:
         return 1
 
     currency = info.get("currency")
+    raw = info.get("raw") or {}
     print(f"=== {slug}: официальная оценка Telegram ===")
-    print(f"Валюта ответа: {getattr(currency, 'value', currency)}")
+    print(f"Валюта ответа: {raw.get('currency') or getattr(currency, 'value', currency)}"
+          f"   делитель: {info.get('divisor')}")
+    print(f"{'поле':<20} {'как пришло':>16} {'после деления':>16}")
     for field in ("value", "floor_price", "average_price", "last_sale_price",
                   "initial_sale_price"):
-        print(f"  {field:<20} {info.get(field)}")
-    print(f"  listed_count         {info.get('listed_count')}")
+        print(f"  {field:<18} {str(raw.get(field)):>16} {str(info.get(field)):>16}")
+    print(f"  {'initial_sale_stars':<18} {str(raw.get('initial_sale_stars')):>16}"
+          f"   (это уже в звёздах)")
+    print(f"  {'listed_count':<18} {str(info.get('listed_count')):>16}")
 
     from app.models import FxSnapshot, utcnow
 

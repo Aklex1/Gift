@@ -343,6 +343,19 @@ class TelegramAdapter(MarketAdapter):
 
         return {
             "currency": Currency.STARS if currency == "XTR" else Currency.TON,
+            # Что пришло по проводу, до всякого деления. Масштаб этих
+            # чисел для GRAM нигде не документирован, и выводить его из
+            # уже поделённых значений — гадание по второму кругу.
+            "raw": {
+                "currency": currency,
+                "value": getattr(res, "value", None),
+                "floor_price": getattr(res, "floor_price", None),
+                "average_price": getattr(res, "average_price", None),
+                "last_sale_price": getattr(res, "last_sale_price", None),
+                "initial_sale_price": getattr(res, "initial_sale_price", None),
+                "initial_sale_stars": getattr(res, "initial_sale_stars", None),
+            },
+            "divisor": divisor,
             "value": conv(getattr(res, "value", None)),
             "floor_price": conv(getattr(res, "floor_price", None)),
             "average_price": conv(getattr(res, "average_price", None)),
