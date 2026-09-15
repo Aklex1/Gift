@@ -193,6 +193,11 @@ class Valuation:
     net_roi: Decimal
     risk_score: int
     confidence: Confidence
+    #: Цена, ниже которой продажа уходит в убыток. Рядом с ценой
+    #: покупки она делает строку самопроверяемой: если «ноль» выше
+    #: floor площадки, продать без убытка нельзя, и никакая оценка
+    #: этого не отменяет.
+    break_even: Decimal = Decimal(0)
     reasons: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
 
@@ -211,6 +216,7 @@ class Valuation:
             "total_cost": str(self.total_cost),
             "net_profit": str(self.net_profit),
             "net_roi": str(self.net_roi),
+            "break_even": str(self.break_even),
             "risk_score": self.risk_score,
             "confidence": self.confidence.value,
             "reasons": self.reasons,
@@ -398,6 +404,9 @@ def evaluate(
         net_roi=net_roi,
         risk_score=risk_score,
         confidence=snapshot.confidence,
+        break_even=break_even_price(
+            session, market=sell_market, cost_basis=total_cost
+        ),
         reasons=reasons,
         blockers=blockers,
     )

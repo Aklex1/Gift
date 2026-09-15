@@ -358,6 +358,9 @@ async def candidates_page(
                     "expected_sale": (row.rationale or {}).get(
                         "expected_sale_price"
                     ),
+                    # Цена, ниже которой продажа уходит в минус. Рядом
+                    # с ценой покупки делает строку самопроверяемой.
+                    "break_even": (row.rationale or {}).get("break_even"),
                     # Где выгоднее продать с учётом комиссий площадок.
                     "better_sale": (row.rationale or {}).get("better_sale"),
                     # Что сказал каждый источник по этому подарку.

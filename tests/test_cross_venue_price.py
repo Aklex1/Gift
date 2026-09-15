@@ -441,3 +441,69 @@ def test_real_discount_still_earns(session, fees):
 
     assert result.expected_sale_price == Decimal("394")
     assert result.net_roi > Decimal("0.2")
+
+
+# --- цена безубыточности ------------------------------------------------
+#
+# Идея подсмотрена у чужого бота: рядом с ценой покупки он показывает
+# «ноль» — цену, ниже которой продажа уходит в минус. Это делает строку
+# самопроверяемой: если ноль выше floor площадки, продать без убытка
+# нельзя, и никакая оценка этого не отменяет.
+
+
+def test_break_even_is_above_the_cost(session, fees):
+    """Ноль выше затрат ровно на комиссию продажи."""
+    snapshot = marketdata.snapshot_from_attribute_floor(
+        collection="Snake Box", model="Pink Bloom",
+        model_floor=Decimal("394"), listed_count=2, models_listed=40,
+    )
+
+    result = valuation.evaluate(
+        session,
+        buy_market=Market.PORTALS, buy_price=Decimal("394"),
+        sell_market=Market.PORTALS, snapshot=snapshot,
+        is_official_api=False, venue_floor=Decimal("394"),
+    )
+
+    assert result.break_even > Decimal("394")
+
+
+def test_break_even_above_the_floor_means_no_deal(session, fees):
+    """Ноль выше потолка площадки — верный признак убытка.
+
+    Ровно случай Snake Box: лот стоял по floor, и чтобы выйти в ноль,
+    продать его пришлось бы дороже floor. То есть никак.
+    """
+    snapshot = marketdata.snapshot_from_attribute_floor(
+        collection="Snake Box", model="Pink Bloom",
+        model_floor=Decimal("394"), listed_count=2, models_listed=40,
+    )
+
+    result = valuation.evaluate(
+        session,
+        buy_market=Market.PORTALS, buy_price=Decimal("394"),
+        sell_market=Market.PORTALS, snapshot=snapshot,
+        is_official_api=False, target_markup=Decimal("0.15"),
+        venue_floor=Decimal("394"),
+    )
+
+    assert result.break_even > result.expected_sale_price
+    assert result.net_roi < 0
+
+
+def test_real_find_clears_its_break_even(session, fees):
+    """У настоящей находки ноль ниже цены продажи."""
+    snapshot = marketdata.snapshot_from_attribute_floor(
+        collection="Snake Box", model="Pink Bloom",
+        model_floor=Decimal("394"), listed_count=2, models_listed=40,
+    )
+
+    result = valuation.evaluate(
+        session,
+        buy_market=Market.PORTALS, buy_price=Decimal("300"),
+        sell_market=Market.PORTALS, snapshot=snapshot,
+        is_official_api=False, venue_floor=Decimal("394"),
+    )
+
+    assert result.break_even < result.expected_sale_price
+    assert result.net_roi > 0
