@@ -96,6 +96,12 @@ sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" \
 chmod 755 "/usr/local/bin/$APP_NAME-cli"
 systemctl daemon-reload
 
+# Таймер бэкапов включаем и здесь, а не только в установщике: на
+# серверах, поставленных до его появления, юнит иначе просто лежит
+# рядом, а копии не снимаются. Команда идемпотентна.
+systemctl enable --now "$APP_NAME-backup.timer" >/dev/null 2>&1 \
+    || warn "Не удалось включить таймер бэкапов — запускайте вручную: bash $APP_DIR/deploy/backup.sh"
+
 if [[ -f "$NGINX_SITE" ]] || command -v nginx >/dev/null; then
     render "$APP_DIR/deploy/nginx.conf" > "$NGINX_SITE"
     ln -sf "$NGINX_SITE" "/etc/nginx/sites-enabled/$APP_NAME"
