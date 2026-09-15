@@ -64,6 +64,20 @@ DEFAULT_WRITE_CONTRACT = {
 RENEW_COOLDOWN_SEC = 120.0
 
 
+def short_collection_name(collection: str) -> str:
+    """Короткое имя коллекции в том виде, в каком его ждёт Portals.
+
+    Площадка принимает `plushpepe`, а не `Plush Pepe`: на
+    отображаемое имя эндпоинт отвечает пустыми списками — без ошибки,
+    просто без данных. Из-за этого floor по моделям не приходил вовсе,
+    оценка откатывалась на пустую историю продаж, и каждый лот Portals
+    отбраковывался как «мало рыночных данных».
+    """
+    import re
+
+    return re.sub(r"[^a-z0-9]", "", (collection or "").lower())
+
+
 class PortalsAdapter(HttpMarketAdapter):
     """Portals: чтение каталога и, по явному разрешению, торговля."""
 
@@ -379,15 +393,17 @@ class PortalsAdapter(HttpMarketAdapter):
         if cached and (dt.datetime.utcnow() - cached[0]).total_seconds() < 600:
             return cached[1]
 
+        short_name = short_collection_name(collection)
         try:
             data = await self.request(
-                "GET", "/collections/filters", params={"short_names": collection}
+                "GET", "/collections/filters", params={"short_names": short_name}
             )
         except Exception as exc:  # noqa: BLE001 - оценка обойдётся без этого
             log.debug("Portals: floor по атрибутам недоступен: %s", exc)
             return {}
 
-        out = self._parse_attribute_floors(data, collection)
+        # В ответе ключом стоит короткое имя, которое мы и спрашивали.
+        out = self._parse_attribute_floors(data, short_name)
         self._floor_cache[collection] = (dt.datetime.utcnow(), out)
         if not any(out.values()):
             log.info(

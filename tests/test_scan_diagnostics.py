@@ -207,3 +207,32 @@ async def test_partial_success_keeps_listings(adapters):
     assert len(rows) == 1
     # Лоты есть — значит площадка работает, и жаловаться не на что.
     assert notes == []
+
+
+# --- отметка идущего прохода ------------------------------------------
+
+
+def test_running_marker_keeps_previous_report(monkeypatch):
+    """Пометка «проход идёт» не должна стирать прошлые цифры.
+
+    Заглушка вместо отчёта приводила к тому, что панель посреди
+    долгого прохода сообщала «ни одна стратегия не включена», хотя
+    стратегия работала.
+    """
+    saved: dict = {}
+
+    monkeypatch.setattr(
+        scanner, "last_report",
+        lambda: {"strategies": ["telegram-floor"], "listings": 250,
+                 "markets": {"telegram": 200}},
+    )
+    monkeypatch.setattr(scanner, "save_report", lambda r: saved.update(r))
+
+    # Повторяем то, что делает начало прохода.
+    scanner.save_report(
+        {**(scanner.last_report() or {}), "running": True, "started_at": "x"}
+    )
+
+    assert saved["running"] is True
+    assert saved["strategies"] == ["telegram-floor"]
+    assert saved["listings"] == 250
