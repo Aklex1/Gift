@@ -470,6 +470,7 @@ def best_sale_market(
     collection: str,
     model: str | None = None,
     markets: "list[Market] | None" = None,
+    known_prices: "dict[Market, Decimal] | None" = None,
 ) -> dict | None:
     """Где выгоднее продать купленное и насколько.
 
@@ -478,12 +479,20 @@ def best_sale_market(
     другой площадке, приносит заметно больше — но только если он там
     действительно продаётся по сопоставимой цене.
 
-    Поэтому цена продажи берётся из данных **самой этой площадки**.
-    Если по ней данных нет, вариант не рассматривается: подставить
-    сюда цену другого рынка значило бы нарисовать прибыль.
+    Поэтому цена продажи берётся из данных **самой этой площадки**:
+    сперва из ``known_prices`` — цен, которые площадки назвали прямо
+    сейчас, при сборе источников по этому подарку, — а если их нет, из
+    накопленной выборки лотов. Когда нет ни того, ни другого, вариант
+    не рассматривается: подставить сюда цену другого рынка значило бы
+    нарисовать прибыль.
 
-    Считается подсказкой, а не заявкой: перенос подарка между
-    площадками бот выполнить не может, это ручная операция.
+    Args:
+        known_prices: живые цены площадок в Stars, уже полученные
+            вызывающей стороной. Позволяют оценить продажу там, куда
+            сканер за лотами не ходил.
+
+    Считается подсказкой, а не заявкой: перенос подарка на другую
+    площадку — отдельный шаг из портфеля, покупка его не запускает.
 
     Returns:
         Лучший вариант, если он выгоднее продажи там же, иначе None.
@@ -500,13 +509,23 @@ def best_sale_market(
         if market is buy_market:
             continue
 
-        snapshot = marketdata.snapshot_for(
-            session, collection=collection, model=model, market=market
-        )
-        anchor = snapshot.floor_price or snapshot.median_price
-        if not anchor or anchor <= 0 or snapshot.active_listings == 0:
-            # Нет собственных данных площадки — считать нечего.
-            continue
+        # Живая цена площадки, если её уже спросили при сборе
+        # источников: она есть по любой коллекции, а не только по тем,
+        # что сканер на этой площадке успел обойти.
+        anchor = (known_prices or {}).get(market)
+        listings = 0
+        basis = "живая цена площадки"
+        if anchor is None or anchor <= 0:
+            snapshot = marketdata.snapshot_for(
+                session, collection=collection, model=model, market=market
+            )
+            anchor = snapshot.floor_price or snapshot.median_price
+            listings = snapshot.active_listings
+            basis = "наша выборка лотов"
+            if not anchor or anchor <= 0 or listings == 0:
+                # Нет данных площадки — считать нечего. Подставить сюда
+                # цену другого рынка значило бы нарисовать прибыль.
+                continue
 
         fees = fees_in(session, get_fees(session, market), Currency.STARS)
         buy_fees = fees_in(session, get_fees(session, buy_market), Currency.STARS)
@@ -526,12 +545,14 @@ def best_sale_market(
                 "net_roi": roi,
                 "sale_fee": fees.total_sale_rate,
                 "transfer_cost": transfer,
-                "listings": snapshot.active_listings,
+                "listings": listings,
+                "basis": basis,
                 "note": (
                     f"продажа на {market.value} по {anchor:.0f} Stars "
                     f"(комиссия {fees.total_sale_rate:.1%} против "
                     f"{buy_fees.total_sale_rate:.0%} на {buy_market.value}); "
-                    f"перенос подарка выполняется вручную"
+                    f"цена — {basis}; перенос подарка отдельным шагом "
+                    f"из портфеля"
                 ),
             }
     return best

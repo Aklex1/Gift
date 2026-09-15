@@ -283,6 +283,62 @@ async def collect_history(market: Market, *, collections: list[str]) -> int:
     return saved
 
 
+PRICE_FIELDS = ("value", "floor_price", "average_price", "last_sale_price",
+                "initial_sale_price")
+
+# Какой площадке принадлежит цена из источника. Собственная выборка
+# ("own") сюда не входит: она не про конкретный рынок.
+SOURCE_MARKETS: dict[str, Market] = {
+    "telegram_value_info": Market.TELEGRAM,
+    "portals_attribute_floor": Market.PORTALS,
+}
+
+
+def _value_info_in_stars(session: Session, info: dict) -> dict | None:
+    """Привести официальную оценку Telegram к Stars.
+
+    ``getUniqueStarGiftValueInfo`` отдаёт цифры либо в Stars, либо в
+    TON — с переходом резейла на TON второе встречается всё чаще. Без
+    пересчёта floor в 5 TON встал бы рядом с ценой лота в Stars и
+    подарок выглядел бы впятеро дешевле рынка.
+    """
+    currency = info.get("currency") or Currency.STARS
+    if currency is Currency.STARS:
+        return info
+    out = dict(info)
+    for field in PRICE_FIELDS:
+        value = info.get(field)
+        if value is None:
+            continue
+        in_stars = marketdata.to_stars(session, Decimal(str(value)), currency)
+        if in_stars is None:
+            # Курса нет — вся оценка непереводима, вместе с ней уходит
+            # и источник: половина цифр в Stars, половина в TON хуже,
+            # чем их отсутствие.
+            return None
+        out[field] = in_stars
+    out["currency"] = Currency.STARS
+    return out
+
+
+def live_prices(sources: list[MarketSnapshot]) -> dict[Market, Decimal]:
+    """Цены в Stars, которые площадки назвали при сборе источников.
+
+    Нужны, чтобы прикинуть продажу на площадке, куда сканер за лотами
+    не ходил: floor модели на Portals спрашивается по любому подарку с
+    моделью, даже если ни одного лота этой коллекции мы там не видели.
+    """
+    out: dict[Market, Decimal] = {}
+    for snapshot in sources:
+        market = SOURCE_MARKETS.get(snapshot.source)
+        if market is None:
+            continue
+        price = snapshot.floor_price or snapshot.median_price
+        if price and price > 0:
+            out[market] = price
+    return out
+
+
 async def gather_sources(
     session: Session, dto: ListingDTO
 ) -> list[MarketSnapshot]:
@@ -313,8 +369,10 @@ async def gather_sources(
         adapter = get_adapter(Market.TELEGRAM)
         if isinstance(adapter, TelegramAdapter) and adapter.supports(Capability.SEARCH):
             try:
-                info = await adapter.value_info(slug)
-                if info.get("floor_price") or info.get("average_price"):
+                info = _value_info_in_stars(
+                    session, await adapter.value_info(slug)
+                )
+                if info and (info.get("floor_price") or info.get("average_price")):
                     sources.append(
                         marketdata.snapshot_from_telegram(
                             info,
@@ -634,6 +692,7 @@ def _sale_hint(best: dict | None) -> dict | None:
         "net_roi": f"{best['net_roi']:.1%}",
         "net_profit": str(best["net_profit"].quantize(Decimal("1"))),
         "listings": best["listings"],
+        "basis": best.get("basis"),
         "note": best["note"],
     }
 
@@ -661,6 +720,7 @@ async def evaluate_listing(
             snapshot = await snapshot_for_listing(session, dto)
         snapshot = marketdata.with_observed_velocity(session, snapshot)
         audit = audit_view(sources)
+        known = live_prices(sources)
         adapter = get_adapter(dto.market)
         is_official = (
             adapter.status_of(Capability.BUY) is CapabilityStatus.SUPPORTED
@@ -721,6 +781,7 @@ async def evaluate_listing(
                 buy_price=price_stars,
                 collection=dto.gift.collection,
                 model=dto.gift.model,
+                known_prices=known,
             )
             if elsewhere and elsewhere["net_roi"] > result.net_roi:
                 result.reasons.append(elsewhere["note"])

@@ -167,11 +167,65 @@ def test_transfer_cost_subtracted(session):
 
 
 def test_note_explains_the_difference(session):
-    """Подсказка объясняет, почему там выгоднее и что перенос ручной."""
+    """Подсказка объясняет, почему там выгоднее и откуда взята цена."""
     _listing(session, Market.PORTALS, "Chill Flame", "Oil Lamp", 609)
 
     note = _best(session)["note"]
 
     assert "portals" in note
     assert "комиссия" in note
-    assert "вручную" in note
+    assert "выборка" in note
+    assert "перенос" in note
+
+
+# --- живые цены площадок ----------------------------------------------
+
+
+def test_live_price_works_without_listings(session):
+    """Цена, названная самой площадкой, годится и без наших лотов.
+
+    Floor модели на Portals спрашивается по любому подарку с моделью —
+    в том числе по коллекции, за лотами которой сканер туда не ходил.
+    Раньше такой вариант молча отбрасывался.
+    """
+    best = _best(session, known_prices={Market.PORTALS: Decimal("609")})
+
+    assert best is not None
+    assert best["market"] == "portals"
+    assert best["sale_price"] == Decimal("609")
+    assert best["basis"] == "живая цена площадки"
+    # Лотов мы там не считали — рисовать число нельзя.
+    assert best["listings"] == 0
+
+
+def test_live_price_preferred_over_stored_listings(session):
+    """Свежая цена площадки важнее накопленной выборки."""
+    _listing(session, Market.PORTALS, "Chill Flame", "Oil Lamp", 900)
+
+    best = _best(session, known_prices={Market.PORTALS: Decimal("609")})
+
+    assert best["sale_price"] == Decimal("609")
+    assert best["basis"] == "живая цена площадки"
+
+
+def test_stored_listings_used_when_no_live_price(session):
+    """Без живой цены работает прежний путь — наша выборка."""
+    _listing(session, Market.PORTALS, "Chill Flame", "Oil Lamp", 609)
+
+    best = _best(session, known_prices={Market.MRKT: Decimal("0")})
+
+    assert best["sale_price"] == Decimal("609")
+    assert best["basis"] == "наша выборка лотов"
+    assert best["listings"] == 1
+
+
+def test_empty_live_price_does_not_invent_a_market(session):
+    """Нулевая живая цена не делает площадку пригодной."""
+    assert _best(session, known_prices={Market.PORTALS: Decimal("0")}) is None
+
+
+def test_live_price_of_buy_market_ignored(session):
+    """Площадка покупки не предлагается, даже с живой ценой."""
+    best = _best(session, known_prices={Market.TELEGRAM: Decimal("9000")})
+
+    assert best is None

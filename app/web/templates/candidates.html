@@ -235,8 +235,13 @@
       по {{ c.better_sale.sale_price }} ★ это
       <b class="pos">{{ c.better_sale.net_roi }}</b> вместо
       {{ '%.1f'|format(c.roi) }}% — комиссия там ниже.
+      {% if c.better_sale.listings %}
       Лотов этого вида на площадке: {{ c.better_sale.listings }}.
-      <b>Перенос подарка выполняется вручную</b>, бот его не делает.
+      {% elif c.better_sale.basis %}
+      Цена — {{ c.better_sale.basis }}, лоты этого вида мы там не считали.
+      {% endif %}
+      Перенос подарка — <b>отдельный шаг</b> из портфеля, покупкой он не
+      выполняется.
     </td>
   </tr>
   {% endif %}

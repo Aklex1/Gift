@@ -284,3 +284,93 @@ def test_audit_view_keeps_disagreement_visible():
     floors = [row["floor"] for row in scanner.audit_view([a, b])]
 
     assert floors == ["2000", "900"]
+
+
+# --- цены, названные самими площадками ---------------------------------
+
+
+def test_live_prices_name_their_market():
+    """Каждая цена приписывается той площадке, что её назвала."""
+    from app.services import scanner
+
+    floor = marketdata.snapshot_from_attribute_floor(
+        collection="Lol Pop", model="Satellite",
+        model_floor=Decimal("2000"), listed_count=8,
+    )
+    telegram = marketdata.snapshot_from_telegram(
+        {"floor_price": Decimal("1500"), "average_price": Decimal("1800")},
+        collection="Lol Pop", model="Satellite",
+    )
+
+    prices = scanner.live_prices([floor, telegram])
+
+    assert prices == {
+        Market.PORTALS: Decimal("2000"),
+        Market.TELEGRAM: Decimal("1500"),
+    }
+
+
+def test_own_sample_is_not_a_market_price(session):
+    """Собственная выборка ничьей ценой не считается.
+
+    Она сводит наблюдения по всем площадкам сразу, и выдать её за цену
+    конкретного рынка значило бы нарисовать прибыль на чужих числах.
+    """
+    from app.services import scanner
+
+    own = marketdata.snapshot_for(session, collection="Lol Pop", model="Satellite")
+
+    assert scanner.live_prices([own]) == {}
+
+
+def test_value_info_in_ton_converted_to_stars(session, monkeypatch):
+    """Оценка Telegram в TON переводится в Stars.
+
+    Резейл всё чаще считает в TON. Без пересчёта floor в 5 TON встал бы
+    рядом с ценой лота в Stars, и подарок выглядел бы в десятки раз
+    дешевле рынка — ровно тот перекос, из-за которого отбор врёт.
+    """
+    from app.services import scanner
+
+    monkeypatch.setattr(
+        marketdata, "to_stars",
+        lambda _s, amount, currency: (
+            amount if currency is Currency.STARS else amount * Decimal("65")
+        ),
+    )
+
+    out = scanner._value_info_in_stars(session, {
+        "currency": Currency.TON,
+        "floor_price": Decimal("5"),
+        "average_price": Decimal("6"),
+        "last_sale_date": None,
+    })
+
+    assert out["currency"] is Currency.STARS
+    assert out["floor_price"] == Decimal("325")
+    assert out["average_price"] == Decimal("390")
+
+
+def test_value_info_in_stars_untouched(session):
+    """Оценка уже в Stars проходит как есть."""
+    from app.services import scanner
+
+    info = {"currency": Currency.STARS, "floor_price": Decimal("1500")}
+
+    assert scanner._value_info_in_stars(session, info) == info
+
+
+def test_value_info_dropped_without_rate(session, monkeypatch):
+    """Без курса источник отбрасывается целиком.
+
+    Половина цифр в Stars, половина в TON — хуже, чем их отсутствие.
+    """
+    from app.services import scanner
+
+    monkeypatch.setattr(marketdata, "to_stars", lambda *_a, **_k: None)
+
+    out = scanner._value_info_in_stars(
+        session, {"currency": Currency.TON, "floor_price": Decimal("5")}
+    )
+
+    assert out is None
