@@ -324,7 +324,11 @@ def _value_info_in_stars(session: Session, info: dict) -> dict | None:
     пересчёта floor в 5 TON встал бы рядом с ценой лота в Stars и
     подарок выглядел бы впятеро дешевле рынка.
     """
-    currency = info.get("currency") or Currency.STARS
+    currency = info.get("currency")
+    if currency is None:
+        # Валюта ответа незнакома. Число без валюты — не цена, и
+        # подставить сюда звёзды значило бы назвать её наугад.
+        return None
     if currency is Currency.STARS:
         return info
     out = dict(info)

@@ -293,3 +293,63 @@ def test_fresh_rate_is_not_flagged(session):
 
     assert row["stale"] is False
     assert data["warning"] is None
+
+
+# --- курс через GRAM ----------------------------------------------------
+
+
+def test_roubles_reach_stars_through_gram(session):
+    """Пара «рубли → звёзды» нигде не записана, но выводится.
+
+    Внешний источник называет цену только GRAM, поэтому к нему
+    привязано всё остальное. Обе половины пары есть — этого довольно.
+    """
+    marketdata.record_fx(
+        session, Currency.TON, Currency.STARS, Decimal("99.808436374"), "tonapi"
+    )
+    marketdata.record_fx(
+        session, Currency.TON, Currency.RUB, Decimal("117"), "tonapi"
+    )
+    session.flush()
+
+    # Числа с сервера: floor 468 ₽ у коллекции, которая на Fragment
+    # стоит 4 GRAM. Обе дороги обязаны привести в одну точку.
+    in_roubles = marketdata.to_stars(session, Decimal("468"), Currency.RUB)
+    in_gram = marketdata.to_stars(session, Decimal("4"), Currency.TON)
+
+    assert in_roubles == in_gram
+    assert Decimal("395") < in_roubles < Decimal("405")
+
+
+def test_cross_rate_needs_both_halves(session):
+    """Одной половины мало — выдумывать вторую нечем."""
+    marketdata.record_fx(
+        session, Currency.TON, Currency.STARS, Decimal("100"), "tonapi"
+    )
+    session.flush()
+
+    assert marketdata.to_stars(session, Decimal("468"), Currency.RUB) is None
+
+
+def test_stale_half_breaks_the_cross_rate(session):
+    """Устаревшая половина не годится и в составном курсе.
+
+    Иначе давний курс рубля пролез бы окольным путём туда, откуда его
+    только что выгнали.
+    """
+    import datetime as dt
+
+    from app.models import FxSnapshot, utcnow
+
+    marketdata.record_fx(
+        session, Currency.TON, Currency.STARS, Decimal("100"), "tonapi"
+    )
+    session.add(
+        FxSnapshot(
+            base=Currency.TON, quote=Currency.RUB, rate=Decimal("117"),
+            source="tonapi", taken_at=utcnow() - dt.timedelta(days=40),
+        )
+    )
+    session.flush()
+
+    assert marketdata.to_stars(session, Decimal("468"), Currency.RUB) is None

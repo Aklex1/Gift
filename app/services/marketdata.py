@@ -81,6 +81,15 @@ def latest_fx(
     ).scalar_one_or_none()
     if fresh(inverse) and Decimal(inverse.rate) > 0:
         return Decimal(1) / Decimal(inverse.rate)
+
+    # Через GRAM: к нему привязаны все остальные курсы, потому что он
+    # единственный, чью цену отдаёт внешний источник. Пара «рубли ->
+    # звёзды» напрямую нигде не записана, но обе её половины есть.
+    if Currency.TON not in (base, quote):
+        to_pivot = latest_fx(session, base, Currency.TON, max_age=max_age)
+        from_pivot = latest_fx(session, Currency.TON, quote, max_age=max_age)
+        if to_pivot and from_pivot:
+            return to_pivot * from_pivot
     return None
 
 

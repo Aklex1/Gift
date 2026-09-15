@@ -1,14 +1,19 @@
-"""Тесты единиц в официальной оценке Telegram.
+"""Тесты валюты и единиц в официальной оценке Telegram.
 
-Telegram отдаёт цены «в наименьших единицах валюты, указанной в
-currency», но какая это единица для GRAM, в документации не сказано.
-Раньше GRAM стоял в исключениях вместе со звёздами и не делился ни на
-что — цены по подаркам, чей резейл считается в GRAM, выходили в сто раз
-больше настоящих.
+Telegram показывает цены подарков в валюте аккаунта: у одного это
+звёзды, у другого рубли. Живой ответ с сервера:
 
-Живой случай: Chill Flame за 504 звезды, floor из оценки 198 800,
-ROI 36 188%. После деления floor становится 4.97 GRAM — ровно столько
-эта коллекция и стоит на Fragment (5) и Portals (4.15).
+    Валюта ответа: RUB
+    floor_price    46800  ->  468.00 ₽
+    initial_sale_price 23200 при initial_sale_stars 176
+
+Второе — проверка первого: 232 ₽ за 176 звёзд это 1.32 ₽ за звезду,
+ровно её цена. Значит фиат приходит сотыми долями, и это факт, а не
+предположение.
+
+Раньше всё, кроме звёзд, считалось GRAM. Рублёвый floor 468 ₽
+превращался в 468 GRAM, то есть в 46 700 звёзд вместо 399 — отсюда и
+брались ROI в десятки тысяч процентов у лота, стоящего ровно по рынку.
 """
 
 from __future__ import annotations
@@ -51,17 +56,63 @@ async def _info(res):
 
 
 @pytest.mark.asyncio
-async def test_gram_amounts_are_hundredths():
-    """Цена в GRAM приходит сотыми долями — её нужно делить.
+async def test_roubles_are_kopecks():
+    """Рублёвый ответ приходит копейками и остаётся рублями.
 
-    Числа из живого случая: 19 880 000 сотых это 198 800 без деления
-    и 4.97 GRAM с делением. Вторая величина совпадает с рынком.
+    Числа живого ответа: 46 800 копеек это 468 ₽. По курсу того же дня
+    это 399 звёзд — ровно столько стоят 4 GRAM, за которые та же
+    коллекция продаётся на Fragment.
     """
-    info = await _info(_Res("TON", 497, 1059))
+    info = await _info(_Res("RUB", 46800, 105900))
+
+    assert info["currency"] is Currency.RUB
+    assert info["floor_price"] == Decimal("468")
+    assert info["average_price"] == Decimal("1059")
+
+
+@pytest.mark.asyncio
+async def test_star_price_confirms_the_scale():
+    """Цена звезды из самого ответа подтверждает масштаб.
+
+    initial_sale_price и initial_sale_stars — одна и та же сумма в
+    двух валютах, так что делитель проверяется по ним, а не по вере.
+    """
+    info = await _info(_Res("RUB", 46800))
+    info["raw"]["initial_sale_price"] = 23200
+    info["raw"]["initial_sale_stars"] = 176
+
+    per_star = (
+        Decimal(info["raw"]["initial_sale_price"]) / info["divisor"]
+        / Decimal(info["raw"]["initial_sale_stars"])
+    )
+
+    assert Decimal("1") < per_star < Decimal("2")
+
+
+@pytest.mark.asyncio
+async def test_unknown_currency_is_not_guessed():
+    """Незнакомый код валюты не подменяется ни звёздами, ни GRAM.
+
+    Число без валюты — не цена. Раньше сюда подставлялся GRAM, и
+    рублёвый floor становился оценкой в сто раз выше рыночной.
+    """
+    info = await _info(_Res("EUR", 46800))
+
+    assert info["currency"] is None
+
+
+@pytest.mark.asyncio
+async def test_gram_is_nanotons():
+    """Для GRAM берётся наименьшая единица сети — нанотон.
+
+    Живого ответа в GRAM мы ещё не видели, поэтому масштаб не
+    проверен. Если он окажется иным, лот отсеется как расхождение
+    источников — превратиться в находку века он не сможет.
+    """
+    info = await _info(_Res("TON", 4_690_000_000))
 
     assert info["currency"] is Currency.TON
-    assert info["floor_price"] == Decimal("4.97")
-    assert info["average_price"] == Decimal("10.59")
+    assert info["floor_price"] == Decimal("4.69")
 
 
 @pytest.mark.asyncio
@@ -79,10 +130,11 @@ async def test_stars_are_whole():
 
 
 @pytest.mark.asyncio
-async def test_fiat_is_hundredths_too():
-    """Фиат делится так же — это общее правило, а не исключение."""
+async def test_dollars_are_cents():
+    """Доллар делится так же, как рубль: это общее правило для фиата."""
     info = await _info(_Res("USD", 1999))
 
+    assert info["currency"] is Currency.USD
     assert info["floor_price"] == Decimal("19.99")
 
 
@@ -93,7 +145,7 @@ async def test_missing_values_stay_missing():
     Ноль в цене — утверждение, что подарок ничего не стоит; отсутствие
     данных таким утверждением не является.
     """
-    info = await _info(_Res("TON", None))
+    info = await _info(_Res("RUB", None))
 
     assert info["floor_price"] is None
     assert info["average_price"] is None
