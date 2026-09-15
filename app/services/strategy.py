@@ -349,3 +349,17 @@ def _market_currency(market: Market) -> "Currency":
     from app.enums import Currency
 
     return Currency.STARS if market is Market.TELEGRAM else Currency.TON
+
+
+def idle_markets(markets: list[str] | None) -> list[str]:
+    """Площадки, которые подключены, но стратегия их не обходит.
+
+    Подключённая площадка и обходимая — разные вещи, и их легко
+    перепутать: в панели MRKT показана рабочей, а стратегия её не
+    называет. Снаружи это выглядит как «бот не видит MRKT», и человек
+    идёт искать поломку в исправном адаптере.
+    """
+    from app.adapters.registry import tradable_markets
+
+    chosen = {str(m).strip().lower() for m in (markets or [])}
+    return [m.value for m in tradable_markets() if m.value not in chosen]

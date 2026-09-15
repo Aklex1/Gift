@@ -451,10 +451,18 @@ async def cmd_strategies(message: Message) -> None:
             )
 
     for sid, name, enabled, mode, min_roi, max_risk, cap, avail, markets in cards:
+        idle = strategy_service.idle_markets(markets)
+        unused = (
+            f"Не обходятся: {', '.join(idle)} — подключены, но не "
+            f"выбраны в стратегии\n"
+            if idle
+            else ""
+        )
         await message.answer(
             f"<b>{name}</b> — {'▶️ включена' if enabled else '⏸ выключена'}\n"
             f"Режим: {mode.upper()}\n"
             f"Площадки: {', '.join(markets) or '—'}\n"
+            f"{unused}"
             f"Мин. ROI: {float(min_roi) * 100:.0f}% · макс. риск: {max_risk}\n"
             f"Бюджет: {gifts_service.format_stars(cap)} Stars "
             f"(свободно {gifts_service.format_stars(avail)})",
