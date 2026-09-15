@@ -51,6 +51,9 @@ def to_decimal_or_none(value: object) -> Decimal | None:
         return None
 
 
+#: По скольким коллекциям собирать историю продаж за проход.
+HISTORY_COLLECTIONS = 20
+
 #: Сколько живёт кандидат, прежде чем считать цену устаревшей.
 CANDIDATE_TTL = dt.timedelta(minutes=10)
 
@@ -256,12 +259,25 @@ async def collect_history(market: Market, *, collections: list[str]) -> int:
 
     saved = 0
     targets: list[str | None] = list(collections) if collections else [None]
-    for collection in targets[:5]:
+    # История продаж — единственный источник скорости рынка, а без неё
+    # риск каждой сделки получает надбавку «скорость продаж
+    # неизвестна». Поэтому собираем по всем коллекциям стратегии, а не
+    # по первым пяти, и сбой одной не обрывает остальные.
+    failures = 0
+    for collection in targets[:HISTORY_COLLECTIONS]:
         try:
             sales = await adapter.history(collection=collection, limit=100)
-        except (AdapterError, Exception) as exc:  # noqa: BLE001
-            log.debug("%s: история недоступна: %s", market.value, exc)
-            break
+        except Exception as exc:  # noqa: BLE001 - одна коллекция не роняет сбор
+            failures += 1
+            log.debug("%s: история %s недоступна: %s", market.value, collection, exc)
+            if failures >= 3:
+                # Три подряд — это не коллекция, а площадка.
+                log.warning(
+                    "%s: история продаж недоступна, скорость рынка "
+                    "останется неизвестной", market.value
+                )
+                break
+            continue
         with session_scope() as session:
             saved += marketdata.record_facts(session, sales, market)
     return saved
@@ -312,12 +328,20 @@ async def snapshot_for_listing(
                             session, collection_floor, Currency.TON
                         )
                     if floor_stars:
-                        return marketdata.snapshot_from_attribute_floor(
+                        snapshot = marketdata.snapshot_from_attribute_floor(
                             collection=dto.gift.collection,
                             model=dto.gift.model,
                             model_floor=floor_stars,
                             collection_floor=collection_floor,
                             listed_count=len(data.get("models") or {}),
+                        )
+                        # Floor площадки даёт цену, но молчит о том,
+                        # как быстро такие лоты уходят. Скорость берём
+                        # из собственных наблюдений: без неё каждая
+                        # сделка получает надбавку к риску «скорость
+                        # продаж неизвестна».
+                        return marketdata.with_observed_velocity(
+                            session, snapshot
                         )
             except Exception as exc:  # noqa: BLE001 - откат на историю
                 log.debug("Portals: floor модели недоступен: %s", exc)

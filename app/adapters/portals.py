@@ -232,9 +232,14 @@ class PortalsAdapter(HttpMarketAdapter):
     ) -> list[ListingDTO]:
         """Активные лоты, отсортированные по возрастанию цены."""
         self._require(Capability.SEARCH)
+        # Площадка отдаёт максимум сотню лотов за запрос, поэтому за
+        # большей выборкой идём страницами. Без этого проход видел
+        # только сотню самых дешёвых лотов коллекции, а недооценка
+        # встречается и выше по цене.
+        page_size = 100
         params: dict[str, object] = {
             "offset": 0,
-            "limit": min(limit, 100),
+            "limit": page_size,
             "sort_by": "price asc",
             "status": "listed",
         }
@@ -250,8 +255,27 @@ class PortalsAdapter(HttpMarketAdapter):
             params["min_price"] = 0
             params["max_price"] = float(max_price)
 
-        data = await self.request("GET", "/nfts/search", params=params)
-        return self._to_listings(dig(data, "results", "nfts", "items", "data"))
+        out: list[ListingDTO] = []
+        seen: set[str] = set()
+        for offset in range(0, max(limit, page_size), page_size):
+            params["offset"] = offset
+            data = await self.request("GET", "/nfts/search", params=params)
+            rows = dig(data, "results", "nfts", "items", "data") or []
+            page = self._to_listings(rows)
+            if not page:
+                break
+
+            # Площадка иногда повторяет записи между страницами, если
+            # в этот момент кто-то купил лот и выкладка сдвинулась.
+            for listing in page:
+                if listing.external_id in seen:
+                    continue
+                seen.add(listing.external_id)
+                out.append(listing)
+
+            if len(rows) < page_size or len(out) >= limit:
+                break
+        return out[:limit]
 
     def _to_listings(self, rows: list) -> list[ListingDTO]:
         """Превратить записи Portals в лоты."""

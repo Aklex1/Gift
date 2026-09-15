@@ -404,3 +404,36 @@ def record_facts(session: Session, sales: list, market: Market) -> int:
         )
         saved += 1
     return saved
+
+
+def with_observed_velocity(
+    session: Session, snapshot: MarketSnapshot, *, window: dt.timedelta = FRESH_WINDOW
+) -> MarketSnapshot:
+    """Дополнить срез скоростью продаж из накопленных фактов.
+
+    Floor площадки отвечает на вопрос «почём», но ничего не говорит о
+    том, как быстро такие лоты уходят. Без этого каждая сделка
+    получает к риску надбавку «скорость продаж неизвестна», и отбор
+    становится строже, чем данные того требуют.
+
+    Скорость берётся из собственных наблюдений и только из них:
+    выдумывать её из цены нельзя.
+    """
+    if snapshot.velocity_per_day > 0:
+        return snapshot
+
+    since = utcnow() - window
+    query = session.query(MarketFact).filter(
+        MarketFact.collection == snapshot.collection,
+        MarketFact.happened_at >= since,
+        MarketFact.suspected_wash.is_(False),
+    )
+    if snapshot.model:
+        query = query.filter(MarketFact.model == snapshot.model)
+    sales = query.count()
+    if not sales:
+        return snapshot
+
+    days = max(1.0, window.total_seconds() / 86400)
+    snapshot.velocity_per_day = round(sales / days, 3)
+    return snapshot
