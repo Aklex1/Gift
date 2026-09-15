@@ -286,6 +286,58 @@ async def candidates_page(
     )
 
 
+@app.post("/positions/{position_id}/transfer")
+async def position_transfer(
+    position_id: int, request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Перенести подарок на площадку с меньшей комиссией.
+
+    Два шага, как у покупки, и по той же причине, только строже:
+    перенос необратим, и вернуть подарок нельзя ничем.
+    """
+    from app.services import executor
+
+    form = await request.form()
+    if not form.get("confirmed"):
+        return RedirectResponse(
+            f"/portfolio?confirm={position_id}", status_code=303
+        )
+
+    result = await executor.execute_transfer(position_id, actor="web")
+    if result.get("ok") is True:
+        note = f"✅ {result['detail']}"
+    elif result.get("ok") is None:
+        note = f"⚠️ {result['detail']}"
+    else:
+        note = f"❌ {result.get('detail')}"
+    return RedirectResponse(f"/portfolio?saved={note}", status_code=303)
+
+
+@app.post("/trading/transfer")
+async def trading_transfer(
+    request: Request, _: str = Depends(require_auth)
+) -> RedirectResponse:
+    """Включить или выключить перенос подарков."""
+    from app.models import AuditLog
+    from app.services import runtime
+
+    form = await request.form()
+    wanted = bool(form.get("enabled"))
+    runtime.set_transfer_enabled(wanted)
+
+    with session_scope() as session:
+        session.add(
+            AuditLog(
+                actor="web",
+                action="runtime.transfer",
+                target="transfer_enabled",
+                payload={"enabled": wanted},
+            )
+        )
+    state = "включён" if wanted else "выключен"
+    return RedirectResponse(f"/trading?saved=Перенос подарков {state}", status_code=303)
+
+
 @app.post("/candidates/{candidate_id}/buy")
 async def candidate_buy(
     candidate_id: int, request: Request, _: str = Depends(require_auth)
@@ -337,9 +389,14 @@ async def candidate_buy(
 
 @app.get("/portfolio", response_class=HTMLResponse)
 async def portfolio_page(
-    request: Request, _: str = Depends(require_auth)
+    request: Request,
+    confirm: int = 0,
+    saved: str = "",
+    _: str = Depends(require_auth),
 ) -> HTMLResponse:
     """Портфель: открытые и закрытые позиции."""
+    from app.services import runtime
+
     with session_scope() as session:
         opened = portfolio.open_positions(session)
         open_rows = []
@@ -355,6 +412,18 @@ async def portfolio_page(
                         Decimal(position.list_price) if position.list_price else None
                     ),
                     "bought_at": position.bought_at,
+                    "custody": str(position.custody_market),
+                    # Перенести можно только то, что лежит в Telegram
+                    # и не выставлено, и только когда прошёл cooldown.
+                    "can_transfer": (
+                        position.custody_market is Market.TELEGRAM
+                        and not position.list_external_id
+                        and (
+                            position.resale_available_at is None
+                            or position.resale_available_at <= utcnow()
+                        )
+                    ),
+                    "locked_until": position.resale_available_at,
                 }
             )
         closed = (
@@ -384,6 +453,9 @@ async def portfolio_page(
             "open_rows": open_rows,
             "closed_rows": closed_rows,
             "fmt": gifts_service.format_stars,
+            "confirm": confirm,
+            "saved": saved,
+            "transfer_on": runtime.transfer_enabled(),
         },
     )
 
@@ -585,6 +657,7 @@ async def trading_page(
                 secrets_module.resolve("BOT_TOKEN", settings.bot_token)
                 and secrets_module.resolve("OWNER_IDS", settings.owner_ids).strip()
             ),
+            "transfer_on": runtime.transfer_enabled(),
             "arb": {
                 "enabled": arbitrage.enabled(),
                 "min_roi_pct": arbitrage.min_roi() * 100,

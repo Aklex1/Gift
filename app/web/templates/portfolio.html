@@ -3,20 +3,57 @@
 {% block content %}
 <h1>Портфель</h1>
 
+{% if saved %}
+<div class="banner ok"><div>{{ saved }}</div></div>
+{% endif %}
+
 <h2>Открытые позиции</h2>
 <table>
-  <tr><th>#</th><th>Подарок</th><th>Статус</th><th>Покупка</th><th>В продаже</th><th>Куплено</th></tr>
+  <tr><th>#</th><th>Подарок</th><th>Статус</th><th>Где лежит</th>
+      <th>Покупка</th><th>В продаже</th><th>Куплено</th><th></th></tr>
   {% for p in open_rows %}
   <tr>
     <td>{{ p.id }}</td>
     <td>{{ p.name }}</td>
     <td>{{ p.status }}</td>
+    <td>{{ p.custody }}</td>
     <td>{{ fmt(p.buy_price) }} ★</td>
     <td>{{ fmt(p.list_price) if p.list_price else '—' }}</td>
     <td>{{ p.bought_at.strftime('%d.%m.%Y %H:%M') }}</td>
+    <td>
+      {% if p.can_transfer and transfer_on %}
+      <form method="post" action="/positions/{{ p.id }}/transfer" class="inline-form">
+        <button type="submit" class="mini">На Portals</button>
+      </form>
+      {% elif p.can_transfer %}
+      <span class="muted" title="Включите на странице «Торговля»">перенос выключен</span>
+      {% elif p.locked_until %}
+      <span class="muted">до {{ p.locked_until.strftime('%d.%m %H:%M') }}</span>
+      {% endif %}
+    </td>
   </tr>
+  {% if confirm == p.id %}
+  <tr>
+    <td colspan="8">
+      <div class="banner danger">
+        <div>
+          <b>Передать «{{ p.name }}» площадке Portals?</b>
+          Подарок уйдёт получателю, указанному в настройках, и
+          <b>вернуть его будет нельзя</b>. Продажа там стоит около 2.5%
+          против 20% в Telegram — в этом смысл переноса.
+          <br><span class="muted">Сверьте получателя заранее:
+            <code>gift-cli transfer-target</code></span>
+        </div>
+        <form method="post" action="/positions/{{ p.id }}/transfer">
+          <input type="hidden" name="confirmed" value="1">
+          <button type="submit">Передать подарок</button>
+        </form>
+      </div>
+    </td>
+  </tr>
+  {% endif %}
   {% else %}
-  <tr><td colspan="6" class="muted">Открытых позиций нет</td></tr>
+  <tr><td colspan="8" class="muted">Открытых позиций нет</td></tr>
   {% endfor %}
 </table>
 

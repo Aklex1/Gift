@@ -161,6 +161,24 @@
 </form>
 
 <h2>Курсы валют</h2>
+<h2>Перенос подарков</h2>
+<p class="muted">
+  Продажа на Portals стоит около 2.5% против 20% в Telegram, поэтому
+  купленный в Telegram подарок выгодно перенести. <b>Перенос
+  необратим</b>: подарок уходит получателю из настроек, и вернуть его
+  нельзя ничем. Поэтому он выключен отдельно от торговли.
+  <br>Перед включением сверьте получателя: <code>gift-cli transfer-target</code>
+</p>
+<form method="post" action="/trading/transfer">
+  <div class="market">
+    <label class="cap">
+      <input type="checkbox" name="enabled" {{ 'checked' if transfer_on }}>
+      Разрешить переносить подарки
+    </label>
+  </div>
+  <div class="actions"><button type="submit">Применить</button></div>
+</form>
+
 <h2>Разница цен между площадками</h2>
 <p class="muted">
   Один и тот же подарок стоит на площадках по-разному. Бот показывает
