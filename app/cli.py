@@ -21,6 +21,8 @@
     verify-key  — проверить, что секреты читаются текущим ключом
     renew-tokens— продлить токены площадок через мини-приложения
     tokens      — показать состояние токенов площадок
+    lots        — какие лоты площадки отдают прямо сейчас
+                  (`lots portals`, `lots --collection "Lol Pop"`)
     feed        — прочитать канал находок и показать коллекции
 """
 
@@ -813,6 +815,121 @@ async def _renew_tokens() -> int:
     return 1 if failed == len(reports) else 0
 
 
+async def _lots(market_name: str | None = None, collection: str | None = None) -> int:
+    """Показать, какие лоты площадки отдают прямо сейчас.
+
+    Отвечает на вопрос, который не решают ни probe, ни scan: probe
+    говорит лишь «площадка жива», а scan уже отфильтрован стратегиями.
+    Здесь — сырой поиск без фильтров, чтобы отличить неработающую
+    площадку от работающей, но с неподходящими коллекциями.
+    """
+    from app.adapters.base import Capability
+    from app.adapters.registry import get_adapter
+    from app.db import init_db, session_scope
+    from app.enums import Currency, Market
+    from app.services import marketdata
+
+    init_db()
+
+    if market_name:
+        try:
+            markets = [Market(market_name.lower())]
+        except ValueError:
+            print(f"✗ Неизвестная площадка: {market_name}", file=sys.stderr)
+            return 1
+    else:
+        markets = [Market.TELEGRAM, Market.PORTALS, Market.MRKT]
+
+    problems = 0
+    for market in markets:
+        print(f"\n=== {market.value} ===")
+        adapter = get_adapter(market)
+
+        if not adapter.supports(Capability.SEARCH):
+            reason = (
+                "сессия не авторизована (gift-cli login)"
+                if market is Market.TELEGRAM
+                else "нет токена площадки — задайте в «Настройках»"
+            )
+            print(f"✗ Поиск недоступен: {reason}")
+            problems += 1
+            continue
+
+        try:
+            rows = await adapter.search(collection=collection, limit=20)
+        except Exception as exc:  # noqa: BLE001 - показываем причину, не падаем
+            print(f"✗ Поиск не удался: {type(exc).__name__}: {exc}")
+            problems += 1
+            continue
+
+        where = f"по коллекции {collection!r}" if collection else "без фильтра"
+        print(f"Лотов получено ({where}): {len(rows)}")
+        if not rows:
+            print("  Площадка ответила, но предложений нет.")
+            print("  Это не поломка: попробуйте другую коллекцию или без фильтра.")
+            continue
+
+        with session_scope() as session:
+            print(f"\n  {'подарок':<34} {'цена':>16} {'≈ Stars':>10}")
+            for row in sorted(rows, key=lambda r: r.price)[:10]:
+                gift = row.gift
+                name = f"{gift.collection or '?'} #{gift.number or '?'}"
+                if gift.model:
+                    name += f" · {gift.model}"
+                in_stars = marketdata.to_stars(session, row.price, row.currency)
+                price = f"{row.price} {display_currency(row.currency)}"
+                stars = f"{in_stars:,.0f}".replace(",", " ") if in_stars else "—"
+                print(f"  {name[:34]:<34} {price:>16} {stars:>10}")
+
+    # Названия коллекций из стратегий — самая частая причина пустого скана.
+    await _check_strategy_collections()
+
+    if problems:
+        print(f"\nПлощадок с проблемой: {problems}")
+    return 1 if problems == len(markets) else 0
+
+
+async def _check_strategy_collections() -> None:
+    """Сверить коллекции включённых стратегий с каталогом Telegram."""
+    from app.adapters.registry import get_adapter
+    from app.adapters.telegram_mtproto import TelegramAdapter
+    from app.db import session_scope
+    from app.enums import Market
+    from app.services import strategy as strategy_service
+
+    with session_scope() as session:
+        wanted: dict[str, list[str]] = {
+            s.name: list(s.collections or [])
+            for s in strategy_service.active_strategies(session)
+        }
+    if not wanted:
+        print("\n=== стратегии ===\nВключённых стратегий нет — сканер ничего не ищет.")
+        return
+
+    adapter = get_adapter(Market.TELEGRAM)
+    if not isinstance(adapter, TelegramAdapter):
+        return
+    try:
+        catalog = await adapter.catalog()
+    except Exception as exc:  # noqa: BLE001 - без каталога просто молчим
+        print(f"\n=== стратегии ===\nКаталог Telegram недоступен: {exc}")
+        return
+
+    print(f"\n=== коллекции стратегий ===")
+    print(f"В каталоге Telegram всего коллекций: {len(catalog)}")
+    for name, collections in wanted.items():
+        if not collections:
+            print(f"  {name}: коллекции не заданы — ищется весь рынок")
+            continue
+        missing = [c for c in collections if c.strip().lower() not in catalog]
+        found = len(collections) - len(missing)
+        print(f"  {name}: задано {len(collections)}, найдено в каталоге {found}")
+        if missing:
+            print(f"    ✗ нет в каталоге: {', '.join(missing)}")
+            print(f"    Такие коллекции Telegram не отдаёт — поиск по ним "
+                  f"возвращает ноль.")
+
+
 async def _feed() -> int:
     """Прочитать канал находок и показать, что из него вышло."""
     from app.db import session_scope
@@ -980,6 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
             "verify-key",
             "renew-tokens",
             "tokens",
+            "lots",
             "feed",
         ],
     )
@@ -1001,6 +1119,10 @@ def main(argv: list[str] | None = None) -> int:
         "--new",
         dest="new_key",
         help="новый ключ для rotate-key (по умолчанию генерируется)",
+    )
+    parser.add_argument(
+        "--collection",
+        help="коллекция для команды lots",
     )
     parser.add_argument(
         "--dry-run",
@@ -1030,6 +1152,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.command in sync_commands:
         return sync_commands[args.command]()
+
+    if args.command == "lots":
+        return asyncio.run(_lots(args.market, args.collection))
 
     if args.command == "rotate-key":
         return cmd_rotate_key(args.new_key, args.dry_run)
