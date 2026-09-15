@@ -34,6 +34,11 @@ from app.services import portfolio
 log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
+#: Сколько кандидатов показывать на странице. Остальные существуют и
+#: доступны боту — просто не помещаются в таблицу, и об этом говорится
+#: прямо, а не умалчивается.
+CANDIDATES_SHOWN = 100
+
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Валюта показывается человеку под своим нынешним именем: TON внутри —
@@ -171,11 +176,16 @@ async def candidates_page(
     from app.services import strategy as strategy_service
 
     with session_scope() as session:
+        base = session.query(Candidate).filter(
+            Candidate.state == "pending", Candidate.expires_at > utcnow()
+        )
+        # Сколько всего подходит — считаем отдельно: показывать часть
+        # молча значит скрывать находки, о существовании которых
+        # никто не узнает.
+        total_pending = base.count()
         rows = (
-            session.query(Candidate)
-            .filter(Candidate.state == "pending", Candidate.expires_at > utcnow())
-            .order_by(Candidate.net_roi.desc())
-            .limit(50)
+            base.order_by(Candidate.net_roi.desc())
+            .limit(CANDIDATES_SHOWN)
             .all()
         )
         items = []
@@ -262,6 +272,8 @@ async def candidates_page(
             # пока он ни разу не отработал, панель уверяла, что
             # стратегий нет, хотя они работали.
             "enabled_strategies": enabled_strategies,
+            "total_pending": total_pending,
+            "shown_limit": CANDIDATES_SHOWN,
             "running": bool(report and report.get("running")),
             "duration": int((report or {}).get("duration_sec") or 0),
             "states": recent_states,

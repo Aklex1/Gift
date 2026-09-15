@@ -239,4 +239,16 @@
   <tr><td colspan="9" class="muted">Активных кандидатов нет</td></tr>
   {% endfor %}
 </table>
+
+{% if total_pending > shown_limit %}
+<p class="muted">
+  Показаны <b>{{ shown_limit }}</b> кандидатов с наибольшим ROI из
+  <b>{{ total_pending }}</b>. Остальные никуда не делись: бот видит их
+  все, и в боте они тоже доступны. Чтобы список стал короче и
+  осмысленнее, поднимите минимальный ROI на странице
+  <a href="/strategies">Стратегии</a>.
+</p>
+{% elif total_pending %}
+<p class="muted">Показаны все {{ total_pending }} подходящих кандидата.</p>
+{% endif %}
 {% endblock %}

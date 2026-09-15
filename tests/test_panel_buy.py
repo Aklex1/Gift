@@ -221,3 +221,48 @@ def test_banner_appears_when_really_disabled(panel, session):
     page = panel.get("/candidates", auth=AUTH).text
 
     assert "Ни одна стратегия не включена" in page
+
+
+def test_truncation_is_disclosed(panel, session):
+    """Если кандидатов больше, чем помещается, об этом сказано прямо.
+
+    Молча показывать часть — значит скрывать находки, о существовании
+    которых никто не узнает.
+    """
+    import datetime as dt
+
+    from app.models import Candidate, Gift, utcnow
+    from app.web import server
+
+    # Делаем список заведомо длиннее предела показа.
+    server.CANDIDATES_SHOWN = 2
+    try:
+        for i in range(5):
+            gift = Gift(canonical_key=f"c#{i}", collection="C", number=i)
+            session.add(gift)
+            session.flush()
+            session.add(
+                Candidate(
+                    strategy_id=1, gift_id=gift.id, market="telegram",
+                    listing_external_id=str(i), price_stars=Decimal("100"),
+                    fair_value_stars=Decimal("200"), net_roi=Decimal("0.1"),
+                    risk_score=10, confidence="high", state="pending",
+                    expires_at=utcnow() + dt.timedelta(minutes=10),
+                )
+            )
+        session.flush()
+
+        page = panel.get("/candidates", auth=AUTH).text
+    finally:
+        server.CANDIDATES_SHOWN = 100
+
+    assert "Показаны <b>2</b>" in page
+    assert "из\n  <b>6</b>" in page or "<b>6</b>" in page
+    assert "никуда не делись" in page
+
+
+def test_full_list_says_so(panel):
+    """Когда влезают все — так и написано, без лишней тревоги."""
+    page = panel.get("/candidates", auth=AUTH).text
+
+    assert "Показаны все" in page

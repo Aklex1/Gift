@@ -485,19 +485,23 @@ class PortalsAdapter(HttpMarketAdapter):
     async def fetch_listing(self, external_id: str) -> ListingDTO | None:
         """Перечитать конкретный лот перед покупкой.
 
-        Отдельного эндпоинта на один лот у площадки нет, поэтому
-        используется поиск по идентификатору.
+        Берётся прямой эндпоинт ``GET /nfts/{id}``. Прежде здесь стоял
+        поиск с ``query=<id>``, но это текстовый поиск: он игнорирует
+        идентификатор и возвращает посторонние лоты. Совпадение не
+        находилось никогда, и каждая покупка на Portals отбивалась
+        сообщением «лот больше не выставлен».
         """
+        if not external_id:
+            return None
         try:
-            data = await self.request(
-                "GET",
-                "/nfts/search",
-                params={"offset": 0, "limit": 50, "status": "listed", "query": external_id},
-            )
+            data = await self.request("GET", f"/nfts/{external_id}")
         except Exception as exc:  # noqa: BLE001 - отсутствие лота не ошибка
             log.debug("Portals: лот %s перечитать не удалось: %s", external_id, exc)
             return None
-        for listing in self._to_listings(dig(data, "results", "nfts", "items", "data")):
+
+        # Эндпоинт отдаёт один объект, а не список.
+        rows = data if isinstance(data, list) else [data]
+        for listing in self._to_listings(rows):
             if listing.external_id == external_id:
                 return listing
         return None
