@@ -304,3 +304,36 @@ def test_ton_address_recognised():
     assert not looks_like_ton_address("@GiftsToPortals")
     assert not looks_like_ton_address("777000")
     assert not looks_like_ton_address("")
+
+
+@pytest.mark.asyncio
+async def test_lookalike_username_warns(target_env, capsys):
+    """Похожее, но другое имя — повод предупредить о подделке.
+
+    Официальный канал Portals сам предупреждает о подделках под
+    депозитный бот, и похожее имя — обычный приём таких подделок.
+    """
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_DEPOSIT", "@GiftsToPortalss")
+    target_env(_Entity(username="GiftsToPortalss"))
+
+    await cli._transfer_target()
+    out = capsys.readouterr().out
+
+    assert "GiftsToPortals" in out
+    assert "подделок" in out
+
+
+@pytest.mark.asyncio
+async def test_official_username_passes_quietly(target_env, capsys):
+    """Совпадающее имя лишних предупреждений не вызывает."""
+    from app import cli
+    from app.services import secrets
+
+    secrets.set_value("PORTALS_DEPOSIT", "@GiftsToPortals")
+    target_env(_Entity())
+
+    assert await cli._transfer_target() == 0
+    assert "подделок" not in capsys.readouterr().out

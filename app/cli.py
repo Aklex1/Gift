@@ -803,6 +803,14 @@ def cmd_doctor() -> int:
     return 1
 
 
+#: Депозитные боты площадок, названные их собственными официальными
+#: каналами (Portals — @portals_community). Это НЕ значение по
+#: умолчанию: получатель всё равно вписывается вручную. Здесь оно
+#: нужно только чтобы заметить расхождение — канал Portals прямо
+#: предупреждает о подделках под этот бот.
+KNOWN_DEPOSIT_BOTS = {"portals": "GiftsToPortals"}
+
+
 async def _transfer_target() -> int:
     """Показать, кому именно бот передаст подарок.
 
@@ -851,6 +859,18 @@ async def _transfer_target() -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Официальный канал Portals сам предупреждает о подделках под
+    # депозитный бот, поэтому расхождение с известным именем — повод
+    # остановиться и посмотреть внимательно.
+    known = KNOWN_DEPOSIT_BOTS.get("portals")
+    if known and target.lstrip("@").lower() != known.lower():
+        print(
+            f"⚠ Официальный канал Portals называет получателем @{known},\n"
+            f"  а здесь указано {target}. Похожие имена — обычный приём\n"
+            f"  подделок. Сверьтесь с мини-приложением, прежде чем\n"
+            f"  включать перенос.\n"
+        )
 
     tg = telegram_gateway.default_gateway()
     try:
