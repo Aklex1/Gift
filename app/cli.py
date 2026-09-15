@@ -1263,11 +1263,15 @@ async def _sales(collection: str | None, model: str | None) -> int:
             grounds = salestats.hunting_grounds(session, limit=10)
         if grounds:
             print("\nГде разброс цен шире всего (разброс × скорость):")
+            print("  по модели     — разброс цен на одно и то же, это прибыль")
+            print("  по коллекции  — в основном разница между моделями,")
+            print("                  премия за редкость, а не скидка\n")
             for row in grounds:
                 what = row["collection"] + (f" / {row['model']}" if row["model"] else "")
                 print(
                     f"  ×{row['spread']:<5} {row['velocity_per_day']:>6} сд/день  "
-                    f"{what} (дёшево от {row['low']:.0f}, обычно {row['median']:.0f})"
+                    f"[{row['scope']:<10}] {what} "
+                    f"(дёшево от {row['low']:.0f}, обычно {row['median']:.0f})"
                 )
         else:
             print("\nСделок пока мало — разброс считать не на чем.")

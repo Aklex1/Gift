@@ -259,3 +259,39 @@ def test_fragment_outranks_own_sample_but_not_the_market():
     assert scanner.choose_primary([fragment, own], Market.PORTALS) is fragment
     assert scanner.choose_primary([own, fragment], Market.PORTALS) is fragment
     assert scanner.choose_primary([fragment, floor], Market.PORTALS) is floor
+
+
+def test_scope_says_what_was_measured(session):
+    """Строка помечена: разброс по модели или по коллекции.
+
+    Это не косметика. По коллекции разброс — почти целиком разница
+    между моделями: рядовой экземпляр 4 GRAM, редкий 16, отношение 4.0.
+    Прочитать его как «бывают скидки вчетверо» значит решить, что можно
+    купить рядовой по цене рядового и продать как редкий.
+    """
+    for i in range(8):
+        _sale(session, 400 if i < 4 else 1600, collection="Смешанная",
+              model=None, days_ago=i + 1, ident=f"c{i}")
+
+    grounds = salestats.hunting_grounds(session)
+
+    assert grounds[0]["scope"] == "коллекция"
+    assert grounds[0]["model"] is None
+
+
+def test_model_rows_come_first(session):
+    """Модельные строки идут выше: они говорят о прибыли напрямую."""
+    # Коллекционная с огромным разбросом — но это разница моделей:
+    # рядовых мало, и медиана падает на редкие.
+    for i in range(20):
+        _sale(session, 400 if i < 4 else 1600, collection="Смешанная",
+              model=None, days_ago=i % 29 + 1, ident=f"c{i}")
+    # Модельная поскромнее — зато про один и тот же подарок.
+    for i in range(8):
+        _sale(session, 400 if i < 2 else 600, collection="Ровная",
+              model="M", days_ago=i + 1, ident=f"m{i}")
+
+    grounds = salestats.hunting_grounds(session)
+
+    assert grounds[0]["scope"] == "модель"
+    assert grounds[0]["spread"] < grounds[1]["spread"]
