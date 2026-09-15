@@ -170,3 +170,54 @@ def test_unknown_outcome_warns_against_retry(panel, monkeypatch):
 def test_buy_requires_auth(panel):
     """Без пароля панель покупку не примет."""
     assert panel.post("/candidates/1/buy", data={"confirmed": "1"}).status_code == 401
+
+
+# --- банер про стратегии ----------------------------------------------
+
+
+def test_enabled_strategy_shown_even_while_scanning(panel, session):
+    """Пока идёт проход, панель не должна уверять, что стратегий нет.
+
+    Раньше вопрос «включена ли стратегия» задавался отчёту сканера.
+    Отчёт во время прохода содержит только пометку о начале, и панель
+    сообщала, что стратегий нет, хотя они работали.
+    """
+    from app.services import scanner
+
+    # Отчёт ровно такой, каким он бывает в середине прохода.
+    session.flush()
+    original = scanner.last_report
+    scanner.last_report = lambda: {"running": True, "started_at": "2026-09-15T03:19:38"}
+    try:
+        page = panel.get("/candidates", auth=AUTH).text
+    finally:
+        scanner.last_report = original
+
+    assert "Ни одна стратегия не включена" not in page
+    assert "включённые стратегии" in page
+
+
+def test_missing_report_does_not_hide_strategies(panel, session):
+    """И когда сканер ещё ни разу не отработал — тоже."""
+    from app.services import scanner
+
+    original = scanner.last_report
+    scanner.last_report = lambda: None
+    try:
+        page = panel.get("/candidates", auth=AUTH).text
+    finally:
+        scanner.last_report = original
+
+    assert "Ни одна стратегия не включена" not in page
+
+
+def test_banner_appears_when_really_disabled(panel, session):
+    """А когда стратегий правда нет — предупреждение на месте."""
+    from app.models import Strategy
+
+    session.query(Strategy).update({"is_enabled": False})
+    session.flush()
+
+    page = panel.get("/candidates", auth=AUTH).text
+
+    assert "Ни одна стратегия не включена" in page

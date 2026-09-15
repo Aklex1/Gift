@@ -28,6 +28,19 @@
     {% endif %}
   </div>
 
+  {% if enabled_strategies %}
+  <div class="scan-markets muted">
+    включённые стратегии:
+    {% for name in enabled_strategies %}<span class="chip">{{ name }}</span>{% endfor %}
+  </div>
+  {% else %}
+  <div class="scan-note warn-text">
+    Ни одна стратегия не включена — сканер не запускается.
+    Включите на странице <a href="/strategies">Стратегии</a>:
+    задайте бюджет, затем поставьте галочку.
+  </div>
+  {% endif %}
+
   {% if report %}
   <div class="scan-stats">
     <div class="stat"><span class="label">Просмотрено лотов</span>
@@ -47,18 +60,6 @@
   </div>
   {% endif %}
 
-  {% if report.strategies %}
-  <div class="scan-markets muted">
-    включённые стратегии:
-    {% for name in report.strategies %}<span class="chip">{{ name }}</span>{% endfor %}
-  </div>
-  {% elif not report.error %}
-  <div class="scan-note warn-text">
-    Ни одна стратегия не включена — сканер не запускается.
-    Включите на странице <a href="/strategies">Стратегии</a>:
-    задайте бюджет, затем поставьте галочку.
-  </div>
-  {% endif %}
 
   {% if running %}
   <div class="scan-note muted">
@@ -175,6 +176,31 @@
       </form>
     </td>
   </tr>
+  {% if c.sources %}
+  <tr>
+    <td colspan="9" style="padding-top:0">
+      <table class="reject" style="font-size:12px">
+        <tr>
+          <th>источник</th><th class="num">медиана</th><th class="num">floor</th>
+          <th class="num">лотов</th><th class="num">продаж/день</th>
+          <th class="num">дней до продажи</th><th>качество</th>
+        </tr>
+        {% for s in c.sources %}
+        <tr>
+          <td>{{ s.source }}</td>
+          <td class="num">{{ s.median or '—' }}</td>
+          <td class="num">{{ s.floor or '—' }}</td>
+          <td class="num">{{ s.listings or '—' }}</td>
+          <td class="num">{{ s.velocity_per_day or '—' }}</td>
+          <td class="num">{{ s.days_to_sell or '—' }}</td>
+          <td>{{ s.confidence }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </td>
+  </tr>
+  {% endif %}
+
   {% if c.better_sale %}
   <tr>
     <td colspan="9" class="muted" style="padding-top:0;font-size:12px">

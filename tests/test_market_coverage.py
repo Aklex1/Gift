@@ -186,3 +186,101 @@ def test_existing_velocity_kept(session):
     assert marketdata.with_observed_velocity(
         session, snapshot
     ).velocity_per_day == 5.0
+
+
+# --- сведение источников по одному подарку ----------------------------
+
+
+def _dto(collection="Lol Pop", model="Satellite", market=Market.PORTALS):
+    """Лот для оценки."""
+    from app.adapters.base import GiftRef, ListingDTO
+
+    return ListingDTO(
+        market=market,
+        external_id="1",
+        gift=GiftRef(collection=collection, model=model, slug="lolpop-1"),
+        price=Decimal("10"),
+        currency=Currency.TON,
+    )
+
+
+def test_primary_prefers_model_floor():
+    """Floor модели точнее всего для редкой модели — он и основной."""
+    from app.services import scanner
+
+    floor = marketdata.snapshot_from_attribute_floor(
+        collection="Lol Pop", model="Satellite",
+        model_floor=Decimal("2000"), listed_count=8,
+    )
+    telegram = marketdata.snapshot_from_telegram(
+        {"floor_price": Decimal("1500"), "average_price": Decimal("1800")},
+        collection="Lol Pop", model="Satellite",
+    )
+
+    chosen = scanner.choose_primary([telegram, floor], Market.PORTALS)
+
+    assert chosen.source == "portals_attribute_floor"
+
+
+def test_primary_falls_back_to_telegram():
+    """Без floor модели берётся официальная оценка Telegram."""
+    from app.services import scanner
+
+    telegram = marketdata.snapshot_from_telegram(
+        {"floor_price": Decimal("1500"), "average_price": Decimal("1800")},
+        collection="Lol Pop", model="Satellite",
+    )
+
+    chosen = scanner.choose_primary([telegram], Market.TELEGRAM)
+
+    assert chosen.source == "telegram_value_info"
+
+
+def test_primary_of_nothing_is_none():
+    """Без источников основного среза нет — и выдумывать его нельзя."""
+    from app.services import scanner
+
+    assert scanner.choose_primary([], Market.PORTALS) is None
+
+
+def test_audit_view_lists_every_source():
+    """В сводке видно, что сказал каждый источник."""
+    from app.services import scanner
+
+    floor = marketdata.snapshot_from_attribute_floor(
+        collection="Lol Pop", model="Satellite",
+        model_floor=Decimal("2000"), listed_count=8,
+    )
+    telegram = marketdata.snapshot_from_telegram(
+        {"floor_price": Decimal("1500"), "average_price": Decimal("1800")},
+        collection="Lol Pop", model="Satellite",
+    )
+
+    view = scanner.audit_view([floor, telegram])
+
+    assert len(view) == 2
+    assert {row["source"] for row in view} == {
+        "portals_attribute_floor", "telegram_value_info"
+    }
+    assert view[0]["floor"] == "2000"
+    assert view[1]["median"] == "1800"
+
+
+def test_audit_view_keeps_disagreement_visible():
+    """Расхождение источников не сглаживается — в этом весь смысл сводки.
+
+    Усреднять цены разных площадок нельзя: получилось бы число, по
+    которому нельзя ни купить, ни продать.
+    """
+    from app.services import scanner
+
+    a = marketdata.snapshot_from_attribute_floor(
+        collection="C", model="M", model_floor=Decimal("2000"), listed_count=3
+    )
+    b = marketdata.snapshot_from_telegram(
+        {"floor_price": Decimal("900")}, collection="C", model="M"
+    )
+
+    floors = [row["floor"] for row in scanner.audit_view([a, b])]
+
+    assert floors == ["2000", "900"]

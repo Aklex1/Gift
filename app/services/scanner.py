@@ -283,6 +283,129 @@ async def collect_history(market: Market, *, collections: list[str]) -> int:
     return saved
 
 
+async def gather_sources(
+    session: Session, dto: ListingDTO
+) -> list[MarketSnapshot]:
+    """Собрать всё, что известно об этом подарке, из каждого источника.
+
+    Источники отвечают на разные вопросы и по-разному надёжны:
+
+    * официальная оценка Telegram — floor, средняя и последняя продажа
+      от самой площадки;
+    * floor модели на Portals — самая точная цена редкой модели,
+      доступная сразу;
+    * собственные наблюдения — единственный источник скорости продаж.
+
+    Раньше брался первый сработавший, остальные отбрасывались, и
+    картина получалась однобокой. Здесь собираются все, чтобы решение
+    опиралось на полную выборку, а не на то, что попалось первым.
+
+    Цены при этом НЕ усредняются между площадками: один и тот же
+    подарок стоит на них по-разному, и среднее было бы числом, по
+    которому нельзя ни купить, ни продать.
+    """
+    sources: list[MarketSnapshot] = []
+
+    # 1. Официальная оценка Telegram — доступна по любому подарку,
+    #    у которого есть slug, независимо от того, где он продаётся.
+    slug = dto.gift.slug or (dto.external_id if dto.market is Market.TELEGRAM else None)
+    if slug:
+        adapter = get_adapter(Market.TELEGRAM)
+        if isinstance(adapter, TelegramAdapter) and adapter.supports(Capability.SEARCH):
+            try:
+                info = await adapter.value_info(slug)
+                if info.get("floor_price") or info.get("average_price"):
+                    sources.append(
+                        marketdata.snapshot_from_telegram(
+                            info,
+                            collection=dto.gift.collection,
+                            model=dto.gift.model,
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001 - источник необязательный
+                log.debug("value_info для %s недоступен: %s", slug, exc)
+
+    # 2. Floor модели на Portals.
+    if dto.gift.model:
+        adapter = get_adapter(Market.PORTALS)
+        floors = getattr(adapter, "attribute_floors", None)
+        if floors is not None:
+            try:
+                data = await floors(dto.gift.collection)
+                model_floor = (data.get("models") or {}).get(dto.gift.model)
+                if model_floor:
+                    floor_stars = marketdata.to_stars(
+                        session, Decimal(str(model_floor)), Currency.TON
+                    )
+                    if floor_stars:
+                        sources.append(
+                            marketdata.snapshot_from_attribute_floor(
+                                collection=dto.gift.collection,
+                                model=dto.gift.model,
+                                model_floor=floor_stars,
+                                listed_count=len(data.get("models") or {}),
+                            )
+                        )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Portals: floor модели недоступен: %s", exc)
+
+    # 3. Собственные наблюдения — они же дают скорость продаж.
+    own = marketdata.snapshot_for(
+        session, collection=dto.gift.collection, model=dto.gift.model
+    )
+    if own.median_price or own.floor_price or own.velocity_per_day:
+        sources.append(own)
+
+    return sources
+
+
+def audit_view(sources: list[MarketSnapshot]) -> list[dict]:
+    """Сводка по источникам для обоснования решения.
+
+    Показывает, что именно сказал каждый источник, — чтобы решение
+    можно было перепроверить, а не принимать на веру.
+    """
+    return [
+        {
+            "source": s.source,
+            "median": str(s.median_price.quantize(Decimal("1")))
+            if s.median_price else None,
+            "floor": str(s.floor_price.quantize(Decimal("1")))
+            if s.floor_price else None,
+            "sample": s.sample_size,
+            "listings": s.active_listings,
+            "confidence": s.confidence.value,
+            "velocity_per_day": s.velocity_per_day or None,
+            "days_to_sell": s.days_to_sell,
+            "newest": s.newest.isoformat(timespec="minutes") if s.newest else None,
+        }
+        for s in sources
+    ]
+
+
+def choose_primary(
+    sources: list[MarketSnapshot], market: Market
+) -> MarketSnapshot | None:
+    """Выбрать срез, по которому считать сделку.
+
+    Усреднять между источниками нельзя: они описывают разные рынки.
+    Поэтому берётся один, самый надёжный для цены, а остальные идут в
+    сводку аудита.
+
+    Порядок: floor модели точнее всего для редких моделей, официальная
+    оценка Telegram — для подарков Telegram, собственная выборка —
+    последняя.
+    """
+    if not sources:
+        return None
+
+    priority = {
+        "portals_attribute_floor": 0,
+        "telegram_value_info": 1 if market is Market.TELEGRAM else 2,
+    }
+    return min(sources, key=lambda s: priority.get(s.source, 3))
+
+
 async def snapshot_for_listing(
     session: Session, dto: ListingDTO
 ) -> MarketSnapshot:
@@ -532,7 +655,12 @@ async def evaluate_listing(
         if price_stars is None or price_stars <= 0:
             return (0, rejections)
 
-        snapshot = await snapshot_for_listing(session, dto)
+        sources = await gather_sources(session, dto)
+        snapshot = choose_primary(sources, dto.market)
+        if snapshot is None:
+            snapshot = await snapshot_for_listing(session, dto)
+        snapshot = marketdata.with_observed_velocity(session, snapshot)
+        audit = audit_view(sources)
         adapter = get_adapter(dto.market)
         is_official = (
             adapter.status_of(Capability.BUY) is CapabilityStatus.SUPPORTED
@@ -622,6 +750,7 @@ async def evaluate_listing(
                 exists.rationale = {
                     **result.as_dict(),
                     "market": snapshot.as_dict(),
+                    "sources": audit,
                     "better_sale": _sale_hint(elsewhere),
                 }
                 exists.expires_at = utcnow() + CANDIDATE_TTL
@@ -643,6 +772,7 @@ async def evaluate_listing(
                     rationale={
                         **result.as_dict(),
                         "market": snapshot.as_dict(),
+                        "sources": audit,
                         "better_sale": _sale_hint(elsewhere),
                     },
                     state="pending",

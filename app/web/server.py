@@ -168,6 +168,7 @@ async def candidates_page(
 ) -> HTMLResponse:
     """Список активных кандидатов и состояние сканера."""
     from app.services import runtime, scanner
+    from app.services import strategy as strategy_service
 
     with session_scope() as session:
         rows = (
@@ -200,6 +201,8 @@ async def candidates_page(
                     ),
                     # Где выгоднее продать с учётом комиссий площадок.
                     "better_sale": (row.rationale or {}).get("better_sale"),
+                    # Что сказал каждый источник по этому подарку.
+                    "sources": (row.rationale or {}).get("sources") or [],
                     "market_value": row.market,
                 }
             )
@@ -209,6 +212,11 @@ async def candidates_page(
             .group_by(Candidate.state)
             .all()
         )
+
+    with session_scope() as session:
+        enabled_strategies = [
+            s.name for s in strategy_service.active_strategies(session)
+        ]
 
     report = scanner.last_report()
     stale = False
@@ -249,6 +257,11 @@ async def candidates_page(
             "stale": stale,
             "age_sec": age_sec,
             "rejections": rejections,
+            # Включена ли стратегия — факт из базы, а не из отчёта
+            # сканера. Раньше спрашивали отчёт, и пока шёл проход либо
+            # пока он ни разу не отработал, панель уверяла, что
+            # стратегий нет, хотя они работали.
+            "enabled_strategies": enabled_strategies,
             "running": bool(report and report.get("running")),
             "duration": int((report or {}).get("duration_sec") or 0),
             "states": recent_states,
