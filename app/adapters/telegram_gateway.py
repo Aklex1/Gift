@@ -38,12 +38,19 @@ class TelegramGateway:
         session_path: Path,
         label: str = "основной",
         account_id: int | None = None,
+        detached: bool = False,
     ) -> None:
         self.api_id = api_id
         self.api_hash = api_hash
         self.session_path = session_path
         self.label = label
         self.account_id = account_id
+        #: Работать с копией сессии в памяти, не трогая файл.
+        #: Файл сессии — это SQLite, и Telethon пишет в него при каждом
+        #: обновлении кэша сущностей. Два процесса на одном файле дают
+        #: «database is locked», поэтому короткоживущим потребителям
+        #: (веб-панель) достаётся копия, а файл остаётся за воркером.
+        self.detached = detached
 
         self._client: Any = None
         self._lock = asyncio.Lock()
@@ -67,6 +74,33 @@ class TelegramGateway:
         """Сколько секунд осталось до конца FloodWait."""
         return max(0.0, self._flood_until - time.monotonic())
 
+    def _session_arg(self) -> Any:
+        """Что передать Telethon: путь к файлу или копию в памяти.
+
+        Обычный режим — путь: сессия живёт между перезапусками.
+        Detached — копия в памяти: ключ авторизации тот же, но запись
+        в общий файл не идёт, и второй процесс не упирается в
+        заблокированный SQLite.
+        """
+        if not self.detached:
+            return str(self.session_path.with_suffix(""))
+
+        from telethon.sessions import MemorySession, SQLiteSession
+
+        memory = MemorySession()
+        if not self.session_path.exists():
+            return memory
+
+        # Читаем файл и сразу закрываем: держать его открытым — ровно
+        # то, чего мы здесь избегаем.
+        source = SQLiteSession(str(self.session_path.with_suffix("")))
+        try:
+            memory.set_dc(source.dc_id, source.server_address, source.port)
+            memory.auth_key = source.auth_key
+        finally:
+            source.close()
+        return memory
+
     async def client(self) -> Any:
         """Получить подключённый и авторизованный TelegramClient."""
         if not self.is_configured():
@@ -81,7 +115,7 @@ class TelegramGateway:
 
         settings.ensure_dirs()
         self._client = TelegramClient(
-            str(self.session_path.with_suffix("")),
+            self._session_arg(),
             self.api_id,
             self.api_hash,
             # Пейсинг делаем сами; авто-ретраи Telethon на FloodWait
@@ -198,6 +232,32 @@ class TelegramGateway:
 #: account_id -> шлюз. Ключ None — аккаунт из .env (до миграции).
 _gateways: dict[int | None, TelegramGateway] = {}
 
+#: Работать с копией сессии в памяти вместо общего файла.
+#:
+#: Файл сессии Telethon — это SQLite, и запись в него идёт при каждом
+#: обновлении кэша сущностей. Держать его могут только из одного
+#: процесса: второй получает «database is locked». Владельцем назначен
+#: воркер — он работает с Telegram постоянно. Панель, бот и CLI
+#: обращаются изредка и коротко, поэтому им достаётся копия ключа.
+#:
+#: Исключение — `gift-cli login`: он создаёт сессию и обязан писать
+#: в файл.
+_prefer_detached = False
+
+
+def prefer_detached(value: bool = True) -> None:
+    """Объявить процесс неосновным потребителем сессии.
+
+    Вызывается на старте панели, бота и CLI. Уже созданные шлюзы
+    сбрасываются: иначе процесс продолжил бы держать файл.
+    """
+    global _prefer_detached
+    if _prefer_detached == value:
+        return
+    _prefer_detached = value
+    _gateways.clear()
+    log.debug("Режим сессии: %s", "копия в памяти" if value else "общий файл")
+
 
 def gateway_for(account: Any) -> TelegramGateway:
     """Получить (и закэшировать) шлюз аккаунта."""
@@ -213,6 +273,7 @@ def gateway_for(account: Any) -> TelegramGateway:
         existing.api_id == account.api_id
         and existing.api_hash == api_hash
         and existing.session_path == path
+        and existing.detached == _prefer_detached
     ):
         return existing
 
@@ -222,6 +283,7 @@ def gateway_for(account: Any) -> TelegramGateway:
         session_path=path,
         label=account.name,
         account_id=account.id,
+        detached=_prefer_detached,
     )
     _gateways[key] = gateway
     return gateway
@@ -230,7 +292,7 @@ def gateway_for(account: Any) -> TelegramGateway:
 def legacy_gateway() -> TelegramGateway:
     """Шлюз по данным из .env — для установок без таблицы аккаунтов."""
     existing = _gateways.get(None)
-    if existing is not None:
+    if existing is not None and existing.detached == _prefer_detached:
         return existing
 
     from app.services import secrets
@@ -246,6 +308,7 @@ def legacy_gateway() -> TelegramGateway:
         api_hash=secrets.resolve("TG_API_HASH", settings.tg_api_hash),
         session_path=settings.session_path,
         label="основной",
+        detached=_prefer_detached,
     )
     _gateways[None] = gateway
     return gateway
@@ -269,6 +332,28 @@ def default_gateway() -> TelegramGateway:
     except Exception as exc:  # noqa: BLE001 - БД может быть недоступна
         log.debug("Список аккаунтов недоступен: %s", exc)
     return legacy_gateway()
+
+
+def detached_gateway(account: Any | None = None) -> TelegramGateway:
+    """Одноразовый шлюз, не трогающий общий файл сессии.
+
+    Нужен процессам, которые обращаются к Telegram изредка и коротко —
+    прежде всего веб-панели. Файл сессии остаётся за воркером, который
+    держит его постоянно; панель работает с копией ключа в памяти.
+    Кэш сущностей при этом не сохраняется — цена одного лишнего
+    запроса к Telegram против «database is locked».
+
+    Шлюз не кэшируется: он одноразовый и должен закрываться вызывающим.
+    """
+    base = default_gateway() if account is None else gateway_for(account)
+    return TelegramGateway(
+        api_id=base.api_id,
+        api_hash=base.api_hash,
+        session_path=base.session_path,
+        label=base.label,
+        account_id=base.account_id,
+        detached=True,
+    )
 
 
 async def close_all() -> None:

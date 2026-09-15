@@ -67,7 +67,13 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
 @app.on_event("startup")
 async def on_startup() -> None:
     """Инициализация логов при старте."""
+    from app.adapters import telegram_gateway
+
     setup_logging("web")
+    # Файл MTProto-сессии держит воркер: панель обращается к Telegram
+    # изредка и работает с копией ключа, иначе оба процесса упираются
+    # в заблокированный SQLite.
+    telegram_gateway.prefer_detached()
     log.info("Веб-панель запущена на %s:%s", settings.web_host, settings.web_port)
 
 
@@ -421,7 +427,7 @@ async def settings_renew_tokens(_: str = Depends(require_auth)) -> JSONResponse:
     from app.adapters.registry import _ADAPTERS
     from app.services import webauth
 
-    reports = await webauth.renew_all(force=True)
+    reports = await webauth.renew_all(force=True, detached=True)
     # Адаптеры держат старый токен в заголовках — пересоздаём.
     _ADAPTERS.clear()
     return JSONResponse({"reports": reports})
@@ -873,7 +879,9 @@ async def feed_sync(_: str = Depends(require_auth)) -> RedirectResponse:
             "/feed?saved=Сначала укажите канал в «Настройках»", status_code=303
         )
 
-    report = await feed.sync()
+    # detached: файл MTProto-сессии постоянно держит воркер, и работа
+    # панели по тому же файлу упиралась в «database is locked».
+    report = await feed.sync(detached=True)
     if report.get("error"):
         return RedirectResponse(f"/feed?saved={report['error']}", status_code=303)
 

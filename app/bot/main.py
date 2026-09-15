@@ -769,7 +769,11 @@ async def cb_unlist(call: CallbackQuery) -> None:
 # ----------------------------------------------------------------------
 async def main() -> None:
     """Запустить бота."""
+    from app.adapters import telegram_gateway
+
     setup_logging("bot")
+    # Сессией владеет воркер — бот работает с копией ключа.
+    telegram_gateway.prefer_detached()
     token = secrets.resolve("BOT_TOKEN", settings.bot_token)
     if not token:
         raise SystemExit(

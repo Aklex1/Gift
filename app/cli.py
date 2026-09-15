@@ -965,6 +965,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # CLI запускается рядом с работающим воркером, который держит файл
+    # сессии. Работаем с копией ключа — кроме login, который эту сессию
+    # и создаёт, а значит обязан писать в файл.
+    if args.command != "login":
+        from app.adapters import telegram_gateway
+
+        telegram_gateway.prefer_detached()
+
     if args.command == "contract":
         if not args.market:
             parser.error("укажите площадку: gift-cli contract portals")

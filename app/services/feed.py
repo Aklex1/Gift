@@ -232,7 +232,9 @@ def parse_channel_ref(raw: str) -> int | str:
     return value.lstrip("@")
 
 
-async def fetch_posts(*, limit: int | None = None) -> list[tuple[int, dt.datetime, str]]:
+async def fetch_posts(
+    *, limit: int | None = None, detached: bool = False
+) -> list[tuple[int, dt.datetime, str]]:
     """Забрать последние сообщения канала.
 
     Returns:
@@ -247,7 +249,11 @@ async def fetch_posts(*, limit: int | None = None) -> list[tuple[int, dt.datetim
     from app.adapters import telegram_gateway
 
     ref = parse_channel_ref(channel_ref())
-    tg = telegram_gateway.default_gateway()
+    tg = (
+        telegram_gateway.detached_gateway()
+        if detached
+        else telegram_gateway.default_gateway()
+    )
     client = await tg.client()
 
     try:
@@ -337,8 +343,13 @@ def store_finds(
     return added
 
 
-async def sync() -> dict:
+async def sync(*, detached: bool = False) -> dict:
     """Прочитать канал и сохранить новые находки.
+
+    Args:
+        detached: работать с копией сессии в памяти. Так делает панель:
+            файл сессии занят воркером, и второй процесс получил бы на
+            нём «database is locked».
 
     Returns:
         Отчёт: сколько постов просмотрено и находок добавлено.
@@ -350,7 +361,7 @@ async def sync() -> dict:
     report: dict = {"posts": 0, "finds": 0, "added": 0}
 
     try:
-        posts = await fetch_posts()
+        posts = await fetch_posts(detached=detached)
     except Exception as exc:  # noqa: BLE001 - канал не должен ронять воркер
         log.warning("Канал находок недоступен: %s", exc)
         return {**report, "error": str(exc)}

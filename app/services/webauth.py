@@ -89,7 +89,9 @@ def extract_init_data(url: str) -> str:
     return unquote(match.group(1)) if match else ""
 
 
-async def fetch_init_data(market: Market, *, account_id: int | None = None) -> str:
+async def fetch_init_data(
+    market: Market, *, account_id: int | None = None, detached: bool = False
+) -> str:
     """Открыть мини-приложение площадки и вернуть свежий initData.
 
     Raises:
@@ -109,7 +111,11 @@ async def fetch_init_data(market: Market, *, account_id: int | None = None) -> s
     bot, short_name = _miniapp(market)
 
     if account_id is None:
-        tg = telegram_gateway.default_gateway()
+        tg = (
+            telegram_gateway.detached_gateway()
+            if detached
+            else telegram_gateway.default_gateway()
+        )
     else:
         from app.db import session_scope
         from app.models import Account
@@ -189,7 +195,9 @@ async def fetch_init_data(market: Market, *, account_id: int | None = None) -> s
     )
 
 
-async def renew(market: Market, *, account_id: int | None = None) -> dict:
+async def renew(
+    market: Market, *, account_id: int | None = None, detached: bool = False
+) -> dict:
     """Обновить токен площадки и сохранить его.
 
     Returns:
@@ -198,7 +206,9 @@ async def renew(market: Market, *, account_id: int | None = None) -> dict:
     from app.services import secrets
 
     try:
-        init_data = await fetch_init_data(market, account_id=account_id)
+        init_data = await fetch_init_data(
+            market, account_id=account_id, detached=detached
+        )
     except Exception as exc:  # noqa: BLE001 - причина уходит в отчёт
         log.warning("%s: обновить токен не удалось: %s", market.value, exc)
         return {"ok": False, "market": market.value, "detail": str(exc)}
@@ -216,10 +226,15 @@ async def renew(market: Market, *, account_id: int | None = None) -> dict:
     return {"ok": True, "market": market.value, "detail": f"{key} обновлён"}
 
 
-async def renew_all(markets=None, *, force: bool = False) -> list[dict]:
+async def renew_all(
+    markets=None, *, force: bool = False, detached: bool = False
+) -> list[dict]:
     """Обновить токены всех площадок, где это возможно."""
     targets = list(markets or MINIAPPS.keys())
-    return [await ensure_fresh(market, force=force) for market in targets]
+    return [
+        await ensure_fresh(market, force=force, detached=detached)
+        for market in targets
+    ]
 
 
 #: Насколько старым может быть initData, прежде чем его обновят.
@@ -299,7 +314,11 @@ def token_state(market: Market) -> dict:
 
 
 async def ensure_fresh(
-    market: Market, *, max_age: int = MAX_AGE_SEC, force: bool = False
+    market: Market,
+    *,
+    max_age: int = MAX_AGE_SEC,
+    force: bool = False,
+    detached: bool = False,
 ) -> dict:
     """Обновить токен, если он старше допустимого.
 
