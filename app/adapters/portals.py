@@ -30,6 +30,7 @@ from app.adapters.base import (
     GiftRef,
     ListingDTO,
     SaleDTO,
+    SearchSkipped,
 )
 from app.adapters.http_base import HttpMarketAdapter, ascii_header, dig, first, to_decimal
 from app.config import settings
@@ -79,6 +80,39 @@ def short_collection_name(collection: str) -> str:
     import re
 
     return re.sub(r"[^a-z0-9]", "", (collection or "").lower())
+
+
+def named(collection: str | None) -> bool:
+    """Назвала ли площадка коллекцию лота.
+
+    ``unknown`` — наша собственная заглушка на случай, когда в ответе
+    названия нет. Считать её чужой коллекцией нельзя: тогда проверка
+    отбросит и правильную выдачу.
+    """
+    return bool(collection) and collection != "unknown"
+
+
+def belongs_to(actual: str | None, requested: str) -> bool:
+    """Тот ли это подарок, который просили.
+
+    Portals не отвечает ошибкой на непонятное значение фильтра — он
+    молча отдаёт выборку без него. При сортировке «по возрастанию
+    цены» это самые дешёвые лоты **всего рынка**, и выглядят они как
+    запрошенная коллекция по неправдоподобно низкой цене.
+
+    Именно так и случилось: на запрос Light Sword пришли лоты по 3.95
+    GRAM с моделями Berry Shake, Gummy Bear и Vanilla Jam — конфетные
+    коллекции, floor рынка. Рядом с ценами Light Sword в Telegram
+    (около 715 Stars) это читалось как разница в 79%.
+
+    Сравнение по короткому имени: в ответе название приходит и как
+    «Light Sword», и как «Light Sword #1234».
+    """
+    if not actual:
+        return False
+    return short_collection_name(actual).startswith(
+        short_collection_name(requested)
+    )
 
 
 class PortalsAdapter(HttpMarketAdapter):
@@ -208,7 +242,13 @@ class PortalsAdapter(HttpMarketAdapter):
             number = None
 
         return GiftRef(
-            collection=str(first(item, "name", "collection", default="unknown")),
+            # Сначала явные ключи коллекции, и только потом «name»:
+            # в ответе Portals это имя самого NFT, а не коллекции, и
+            # брать его первым значит подписывать лот чужим названием.
+            collection=str(
+                first(item, "collection_name", "collection", "name",
+                      default="unknown")
+            ),
             number=number,
             slug=first(item, "id", "nft_id"),
             model=traits.get("model"),
@@ -252,7 +292,9 @@ class PortalsAdapter(HttpMarketAdapter):
             "status": "listed",
         }
         if collection:
-            params["filter_by_collections"] = collection
+            # Короткое имя, а не отображаемое: на «Light Sword»
+            # площадка фильтр не применяет вовсе.
+            params["filter_by_collections"] = short_collection_name(collection)
         if model:
             params["filter_by_models"] = model
         if backdrop:
@@ -283,6 +325,29 @@ class PortalsAdapter(HttpMarketAdapter):
 
             if len(rows) < page_size or len(out) >= limit:
                 break
+
+        if collection and out:
+            # Отбрасываем только при прямом свидетельстве чужого: лот,
+            # у которого название коллекции не пришло вовсе, остаётся.
+            # Проверка должна ловить подмену выдачи, а не молчание
+            # площадки о названии — иначе она выкосит всё.
+            foreign = [
+                dto
+                for dto in out
+                if named(dto.gift.collection)
+                and not belongs_to(dto.gift.collection, collection)
+            ]
+            kept = [dto for dto in out if dto not in foreign]
+            if not kept:
+                # Не «лотов нет»: лоты пришли, просто чужие. Разница
+                # между этими двумя случаями — это разница между
+                # пустой выдачей и выдуманной находкой.
+                raise SearchSkipped(
+                    f"portals: фильтр по коллекции «{collection}» не "
+                    f"применился — вернулись лоты других коллекций "
+                    f"(например «{out[0].gift.collection}»)"
+                )
+            out = kept
         return out[:limit]
 
     def _to_listings(self, rows: list) -> list[ListingDTO]:
@@ -318,7 +383,7 @@ class PortalsAdapter(HttpMarketAdapter):
         self._require(Capability.HISTORY)
         params: dict[str, object] = {"offset": 0, "limit": min(limit, 100)}
         if collection:
-            params["filter_by_collections"] = collection
+            params["filter_by_collections"] = short_collection_name(collection)
         if model:
             params["filter_by_models"] = model
 

@@ -290,13 +290,47 @@ class MrktAdapter(HttpMarketAdapter):
             )
         return out
 
+    #: Сколько нанотонов в одном GRAM. MRKT называет все суммы в них —
+    #: и цены лотов, и балансы.
+    NANO = Decimal("1000000000")
+
     async def balance(self) -> list[BalanceDTO]:
-        """Баланс аккаунта MRKT."""
+        """Баланс аккаунта MRKT.
+
+        Эндпоинт — ``/balance``. ``/users/me`` отвечает 404: такого
+        пути у площадки нет, и панель показывала вместо баланса текст
+        ошибки HTTP.
+
+        Ответ перечисляет все внутренние счёта сразу: ``hard`` — GRAM,
+        ``stars`` — звёзды, остальное (``soft``, ``spices``,
+        ``stackingPoints``) это игровые очки мини-приложения, за
+        которые подарки не покупаются. Возвращаем только два первых:
+        показать очки как деньги значит нарисовать бюджет, которого нет.
+        """
         self._require(Capability.BALANCE)
-        data = await self.request("GET", "/users/me")
-        raw = to_decimal(first(data, "balance", "ton", "amount"), Decimal(0)) or Decimal(0)
-        amount = raw / Decimal("1000000000") if raw > 10**6 else raw
-        return [BalanceDTO(market=self.market, currency=Currency.TON, amount=amount)]
+        data = await self.request("GET", "/balance")
+        if not isinstance(data, dict):
+            return []
+
+        out: list[BalanceDTO] = []
+        hard = to_decimal(data.get("hard"), Decimal(0)) or Decimal(0)
+        out.append(
+            BalanceDTO(
+                market=self.market,
+                currency=Currency.TON,
+                amount=hard / self.NANO,
+                raw=data,
+            )
+        )
+        stars = to_decimal(data.get("stars"), Decimal(0)) or Decimal(0)
+        if stars:
+            out.append(
+                BalanceDTO(
+                    market=self.market, currency=Currency.STARS,
+                    amount=stars, raw=data,
+                )
+            )
+        return out
 
     async def inventory(self) -> list[ListingDTO]:
         """Собственные подарки на MRKT."""
