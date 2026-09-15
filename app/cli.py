@@ -974,7 +974,7 @@ async def _lots(market_name: str | None = None, collection: str | None = None) -
     from app.adapters.registry import get_adapter
     from app.db import init_db, session_scope
     from app.enums import Currency, Market
-    from app.services import marketdata
+    from app.services import marketdata, valuation
 
     init_db()
 
@@ -1024,7 +1024,10 @@ async def _lots(market_name: str | None = None, collection: str | None = None) -
                 if gift.model:
                     name += f" · {gift.model}"
                 in_stars = marketdata.to_stars(session, row.price, row.currency)
-                price = f"{row.price} {display_currency(row.currency)}"
+                # Площадки отдают цены с хвостами вроде 3.969999985 —
+                # показывать их целиком значит мешать чтению.
+                shown = valuation.round_price(row.price, row.currency)
+                price = f"{shown} {display_currency(row.currency)}"
                 stars = f"{in_stars:,.0f}".replace(",", " ") if in_stars else "—"
                 print(f"  {name[:34]:<34} {price:>16} {stars:>10}")
 

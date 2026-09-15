@@ -79,6 +79,25 @@ def record_fx(
     return snapshot
 
 
+#: Об отсутствии курса предупреждаем один раз на процесс: сообщение
+#: сопровождало каждый пересчёт и заглушало собой полезный вывод.
+_fx_warned = False
+
+
+def _warn_missing_fx() -> None:
+    """Предупредить об отсутствии курса — однократно."""
+    global _fx_warned
+    if _fx_warned:
+        return
+    _fx_warned = True
+    log.warning(
+        "Нет FX-снапшота TON->STARS, беру грубую оценку %s. "
+        "Расчёты приблизительны до обновления курса "
+        "(обновить: gift-cli doctor или дождаться воркера).",
+        DEFAULT_STARS_PER_TON,
+    )
+
+
 def to_stars(session: Session, amount: Decimal, currency: Currency) -> Decimal | None:
     """Привести сумму к Stars по последнему снапшоту курса."""
     if currency is Currency.STARS:
@@ -86,11 +105,7 @@ def to_stars(session: Session, amount: Decimal, currency: Currency) -> Decimal |
     rate = latest_fx(session, currency, Currency.STARS)
     if rate is None:
         if currency is Currency.TON:
-            log.warning(
-                "Нет FX-снапшота TON->STARS, беру грубую оценку %s. "
-                "Расчёты приблизительны до обновления курса.",
-                DEFAULT_STARS_PER_TON,
-            )
+            _warn_missing_fx()
             rate = DEFAULT_STARS_PER_TON
         else:
             return None
